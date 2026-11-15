@@ -1,0 +1,49 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // User profiles & progress sync
+    match /users/{userId} {
+      allow get: if isSignedIn() && request.auth.uid == userId;
+      allow list: if false;
+      allow create: if isSignedIn() && request.auth.uid == userId && isValidId(userId)
+                    && incoming().uid == request.auth.uid;
+      allow update: if isSignedIn() && request.auth.uid == userId && isValidId(userId)
+                    && incoming().uid == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Leaderboard & records
+    match /leaderboard/{recordId} {
+      allow get, list: if true;
+      allow create: if isSignedIn() && isValidId(recordId)
+                    && incoming().userId == request.auth.uid
+                    && incoming().wpm is number
+                    && incoming().wpm >= 0 && incoming().wpm <= 500;
+      allow update: if isSignedIn() && isValidId(recordId)
+                    && existing().userId == request.auth.uid
+                    && incoming().userId == request.auth.uid;
+      allow delete: if isSignedIn() && existing().userId == request.auth.uid;
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "entities": {
+    "userProfile": {
+      "title": "UserProfile",
+      "description": "User profile with cat pet state, XP, daily achievements and sync data",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "xp": { "type": "number" },
+        "level": { "type": "string" },
+        "wordsTypedCount": { "type": "number" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "displayName"]
+    },
+    "scoreRecord": {
+      "title": "ScoreRecord",
+      "description": "Typing test record for leaderboard and personal statistics",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userPhoto": { "type": "string" },
+        "mode": { "type": "string" },
+        "wpm": { "type": "number" },
+        "cpm": { "type": "number" },
+        "accuracy": { "type": "number" },
+        "wordsCount": { "type": "number" },
+        "timeSeconds": { "type": "number" },
+        "details": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "userName", "mode", "wpm", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "userProfile",
+      "description": "User profiles and synced pet progress"
+    },
+    "/leaderboard/{recordId}": {
+      "schema": "scoreRecord",
+      "description": "Global leaderboard typing records"
+    }
+  }
+}

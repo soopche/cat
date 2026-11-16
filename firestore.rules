@@ -33,13 +33,21 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Leaderboard & records
+    // Leaderboard & records (supports both signed-in players and guest players for Top-50)
     match /leaderboard/{recordId} {
       allow get, list: if true;
-      allow create: if isSignedIn() && isValidId(recordId)
-                    && incoming().userId == request.auth.uid
+      allow create: if isValidId(recordId)
+                    && (
+                      (isSignedIn() && incoming().userId == request.auth.uid) ||
+                      (incoming().userId is string && incoming().userId.matches('^guest_[a-zA-Z0-9_\\-]+$'))
+                    )
+                    && incoming().userName is string
+                    && incoming().userName.size() > 0
+                    && incoming().userName.size() <= 60
                     && incoming().wpm is number
-                    && incoming().wpm >= 0 && incoming().wpm <= 500;
+                    && incoming().wpm >= 0 && incoming().wpm <= 500
+                    && incoming().accuracy is number
+                    && incoming().accuracy >= 0 && incoming().accuracy <= 100;
       allow update: if isSignedIn() && isValidId(recordId)
                     && existing().userId == request.auth.uid
                     && incoming().userId == request.auth.uid;

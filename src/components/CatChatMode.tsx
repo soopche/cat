@@ -27,6 +27,7 @@ interface CatChatModeProps {
   onToggleMobileMode: () => void;
   isRewardMode?: boolean;
   onWordCompleted?: (wordsCount?: number, charLength?: number) => void;
+  onChatSent?: () => void;
 }
 
 interface CatQuestion {
@@ -169,7 +170,8 @@ export const CatChatMode: React.FC<CatChatModeProps> = ({
   isMobileMode,
   onToggleMobileMode,
   isRewardMode,
-  onWordCompleted
+  onWordCompleted,
+  onChatSent
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     const saved = localStorage.getItem('typecat_chat_history_v1');
@@ -407,6 +409,7 @@ export const CatChatMode: React.FC<CatChatModeProps> = ({
       const avgLen = Math.round(textToSend.length / wordsCount);
       onWordCompleted?.(wordsCount, avgLen);
     }
+    onChatSent?.();
 
     // Cat thinks and answers
     setIsCatThinking(true);
@@ -470,7 +473,7 @@ export const CatChatMode: React.FC<CatChatModeProps> = ({
   };
 
   return (
-    <div className="w-full max-w-4xl flex flex-col items-center gap-3">
+    <div translate="no" className="notranslate w-full max-w-4xl flex flex-col items-center gap-3">
       {/* Top Banner with Cat and Info */}
       <div className="w-full bg-white/95 rounded-2xl shadow-sm border border-slate-200 p-3 sm:p-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   HeaderBar 
 } from './components/HeaderBar';
@@ -33,7 +33,7 @@ import {
   AppMode, 
   CatLevel, 
   PetStats, 
-  AchievementItem 
+  QuestProgressCounters 
 } from './types';
 import { 
   auth, 
@@ -55,130 +55,216 @@ import {
   launchBigCelebration,
   speakRussianText
 } from './utils/soundAndEffects';
+import {
+  getCatLevelFromXp,
+  getTodayLocalDateString,
+  createInitialQuestCounters,
+  evaluateAllQuests,
+  CAT_STAGE_THRESHOLDS
+} from './data/quests';
 import { Play, Pause, StopCircle } from 'lucide-react';
 
-const INITIAL_ACHIEVEMENTS: AchievementItem[] = [
-  {
-    id: 'first_word',
-    title: 'Первая лапка',
-    description: 'Напечатай своё первое слово',
-    icon: '🐾',
-    xpReward: 10,
-    isUnlocked: false
-  },
-  {
-    id: 'speed_demon',
-    title: 'Реактивный котёнок',
-    description: 'Достигни скорости более 25 WPM',
-    icon: '⚡',
-    xpReward: 25,
-    isUnlocked: false
-  },
-  {
-    id: 'marathon_runner',
-    title: 'Марафонец',
-    description: 'Заверши марафон слов',
-    icon: '🏃',
-    xpReward: 35,
-    isUnlocked: false
-  },
-  {
-    id: 'letter_hunter',
-    title: 'Буквенный следопыт',
-    description: 'Освой 10 букв за день в буквенном спринте',
-    icon: '🔤',
-    xpReward: 50,
-    isUnlocked: false
-  },
-  {
-    id: 'chat_friend',
-    title: 'Лучший собеседник',
-    description: 'Поговори с котиком в режиме диалога',
-    icon: '💬',
-    xpReward: 25,
-    isUnlocked: false
-  },
-  {
-    id: 'keyboard_sniper',
-    title: 'Снайпер клавиатуры',
-    description: 'Напечатай текст с точностью более 92%',
-    icon: '🎯',
-    xpReward: 100,
-    isUnlocked: false
-  },
-  {
-    id: 'careful_master',
-    title: 'Заботливый хозяин',
-    description: 'Накорми, помой и поиграй — подними все шкалы выше 70%',
-    icon: '🥣',
-    xpReward: 50,
-    isUnlocked: false
-  },
-  {
-    id: 'happy_cat',
-    title: 'Счастливый питомец',
-    description: 'Подними шкалу радости котика до 100%',
-    icon: '💖',
-    xpReward: 20,
-    isUnlocked: false
-  },
-  {
-    id: 'riddle_genius',
-    title: 'Юный эрудит',
-    description: 'Разгадай загадку от котика',
-    icon: '🧩',
-    xpReward: 35,
-    isUnlocked: false
-  },
-  {
-    id: 'sport_hero',
-    title: 'Спортивный котик',
-    description: 'Сделай спортивную разминку с котиком',
-    icon: '🏅',
-    xpReward: 40,
-    isUnlocked: false
-  },
-  {
-    id: 'grand_master',
-    title: 'Великий Магистр-Кот',
-    description: 'Вырасти котика до наивысшего возраста',
-    icon: '👑',
-    xpReward: 100,
-    isUnlocked: false
+const LOCAL_SAVE_KEY = 'typecat_save_v32';
+
+const EMPTY_PET_STATS: PetStats = {
+  hunger: 0,
+  sleep: 0,
+  clean: 0,
+  happiness: 0,
+  intelligence: 0
+};
+
+function clampDisplayLevelToUnlocked(desired: CatLevel | string | undefined, xp: number, fallback: CatLevel): CatLevel {
+  if (!desired) return fallback;
+  const stageObj = CAT_STAGE_THRESHOLDS.find(s => s.level === desired);
+  if (!stageObj) return fallback;
+  return xp >= stageObj.requiredXp ? stageObj.level : fallback;
+}
+
+interface InitialLocalSave {
+  stats: PetStats;
+  statsDate: string;
+  xp: number;
+  level: CatLevel;
+  displayLevel: CatLevel;
+  hasUnlockedAllAges: boolean;
+  wordsTypedCount: number;
+  streakDays: number;
+  lastActiveDate: string;
+  soundEnabled: boolean;
+  kbScale: number;
+  rewardSeconds: number;
+  claimedQuestIds: string[];
+  unlockedQuestIds: string[];
+  questCounters: QuestProgressCounters;
+  localRecords: ScoreRecord[];
+  playerName: string;
+}
+
+function loadInitialLocalSave(): InitialLocalSave {
+  const todayStr = getTodayLocalDateString();
+  const defaults: InitialLocalSave = {
+    stats: { ...EMPTY_PET_STATS },
+    statsDate: todayStr,
+    xp: 0,
+    level: 'baby',
+    displayLevel: 'baby',
+    hasUnlockedAllAges: false,
+    wordsTypedCount: 0,
+    streakDays: 1,
+    lastActiveDate: todayStr,
+    soundEnabled: true,
+    kbScale: 1,
+    rewardSeconds: 0,
+    claimedQuestIds: [],
+    unlockedQuestIds: [],
+    questCounters: createInitialQuestCounters(todayStr),
+    localRecords: [],
+    playerName: ''
+  };
+
+  try {
+    const raw = localStorage.getItem(LOCAL_SAVE_KEY);
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw);
+
+    const xp = typeof parsed.xp === 'number' ? parsed.xp : defaults.xp;
+    const computedLevel = getCatLevelFromXp(xp);
+    // Only unlock all ages when reaching the true maximum 7th stage (12000 XP)
+    const hasUnlockedAllAges = computedLevel === 'cosmic';
+    const displayLevel: CatLevel = clampDisplayLevelToUnlocked(parsed.displayLevel, xp, computedLevel);
+
+    // Migrate legacy achievements array if present
+    const legacyClaimed: string[] = [];
+    const legacyUnlocked: string[] = [];
+    if (Array.isArray(parsed.achievements)) {
+      for (const a of parsed.achievements) {
+        if (a && a.id) {
+          if (a.isUnlocked) legacyUnlocked.push(a.id);
+          if (a.isClaimed) legacyClaimed.push(a.id);
+        }
+      }
+    }
+
+    const claimedQuestIds = Array.from(
+      new Set([...(Array.isArray(parsed.claimedQuestIds) ? parsed.claimedQuestIds : []), ...legacyClaimed])
+    );
+    const unlockedQuestIds = Array.from(
+      new Set([...(Array.isArray(parsed.unlockedQuestIds) ? parsed.unlockedQuestIds : []), ...legacyUnlocked])
+    );
+
+    const savedCounters = parsed.questCounters || {};
+    const isSameCounterDay = savedCounters.dailyDate === todayStr;
+    const wordsTypedCount = typeof parsed.wordsTypedCount === 'number' ? parsed.wordsTypedCount : 0;
+
+    const questCounters: QuestProgressCounters = {
+      dailyDate: todayStr,
+      dailyWords: isSameCounterDay ? Number(savedCounters.dailyWords || 0) : 0,
+      dailyFeedings: isSameCounterDay ? Number(savedCounters.dailyFeedings || 0) : 0,
+      dailyCareActions: isSameCounterDay ? Number(savedCounters.dailyCareActions || 0) : 0,
+      dailyRiddlesMathSport: isSameCounterDay ? Number(savedCounters.dailyRiddlesMathSport || 0) : 0,
+      dailyMarathons: isSameCounterDay ? Number(savedCounters.dailyMarathons || 0) : 0,
+      dailySpeedTexts: isSameCounterDay ? Number(savedCounters.dailySpeedTexts || 0) : 0,
+      dailySprintLetters: isSameCounterDay ? Number(savedCounters.dailySprintLetters || 0) : 0,
+      dailyChatMessages: isSameCounterDay ? Number(savedCounters.dailyChatMessages || 0) : 0,
+      totalWords: Math.max(wordsTypedCount, Number(savedCounters.totalWords || 0)),
+      totalMarathons: Number(savedCounters.totalMarathons || 0),
+      totalSpeedTexts: Number(savedCounters.totalSpeedTexts || 0),
+      totalSprintLetters: Number(savedCounters.totalSprintLetters || 0),
+      totalRiddles: Number(savedCounters.totalRiddles || 0),
+      totalMath: Number(savedCounters.totalMath || 0),
+      totalSport: Number(savedCounters.totalSport || 0),
+      totalFeedings: Number(savedCounters.totalFeedings || 0),
+      totalWashings: Number(savedCounters.totalWashings || 0),
+      totalSleeps: Number(savedCounters.totalSleeps || 0),
+      totalPlays: Number(savedCounters.totalPlays || 0),
+      totalChats: Number(savedCounters.totalChats || 0),
+      maxWpm: Number(savedCounters.maxWpm || 0),
+      highAccuracyTexts: Number(savedCounters.highAccuracyTexts || 0),
+      recordsSaved: Number(savedCounters.recordsSaved || (Array.isArray(parsed.localRecords) ? parsed.localRecords.length : 0)),
+    };
+
+    // Check if user entered today or on a different day:
+    // Same day (e.g., 7 AM and 9 PM today): keep exact scales from exit!
+    // Different day: all scales start at 0% (empty)!
+    const savedStatsDate = parsed.statsDate || parsed.lastActiveDate || savedCounters.dailyDate;
+    const isSameStatsDay = savedStatsDate === todayStr;
+    const stats: PetStats = isSameStatsDay && parsed.stats
+      ? {
+          hunger: Number(parsed.stats.hunger ?? 0),
+          sleep: Number(parsed.stats.sleep ?? 0),
+          clean: Number(parsed.stats.clean ?? 0),
+          happiness: Number(parsed.stats.happiness ?? 0),
+          intelligence: Number(parsed.stats.intelligence ?? 0),
+        }
+      : { ...EMPTY_PET_STATS };
+
+    // Update streak if user returns on a new day
+    let streakDays = typeof parsed.streakDays === 'number' ? parsed.streakDays : 1;
+    const lastActiveDate = parsed.lastActiveDate || todayStr;
+    if (lastActiveDate !== todayStr) {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = getTodayLocalDateString(yesterday);
+      if (lastActiveDate === yesterdayStr) {
+        streakDays += 1;
+      }
+    }
+
+    return {
+      stats,
+      statsDate: todayStr,
+      xp,
+      level: computedLevel,
+      displayLevel,
+      hasUnlockedAllAges,
+      wordsTypedCount,
+      streakDays,
+      lastActiveDate: todayStr,
+      soundEnabled: parsed.soundEnabled !== undefined ? Boolean(parsed.soundEnabled) : true,
+      kbScale: typeof parsed.kbScale === 'number' ? parsed.kbScale : 1,
+      rewardSeconds: typeof parsed.rewardSeconds === 'number' ? parsed.rewardSeconds : 0,
+      claimedQuestIds,
+      unlockedQuestIds,
+      questCounters,
+      localRecords: Array.isArray(parsed.localRecords) ? parsed.localRecords : [],
+      playerName: typeof parsed.playerName === 'string' ? parsed.playerName : ''
+    };
+  } catch (e) {
+    console.error('Local save load error:', e);
+    return defaults;
   }
-];
+}
 
 export default function App() {
+  const initialSave = useMemo(() => loadInitialLocalSave(), []);
+
   const [currentMode, setCurrentMode] = useState<AppMode>('classic_pet');
   const [user, setUser] = useState<User | null>(null);
+  const [playerName, setPlayerName] = useState<string>(initialSave.playerName);
 
-  // Stats start at minimum (15-20%) as requested
-  const [stats, setStats] = useState<PetStats>({
-    hunger: 18,
-    sleep: 20,
-    clean: 15,
-    happiness: 22,
-    intelligence: 16
-  });
+  const [stats, setStats] = useState<PetStats>(initialSave.stats);
+  const [statsDate, setStatsDate] = useState<string>(initialSave.statsDate);
+  const [xp, setXp] = useState<number>(initialSave.xp);
+  const [level, setLevel] = useState<CatLevel>(initialSave.level);
+  const [displayLevel, setDisplayLevel] = useState<CatLevel>(initialSave.displayLevel);
+  const [hasUnlockedAllAges, setHasUnlockedAllAges] = useState<boolean>(initialSave.hasUnlockedAllAges);
 
-  const [xp, setXp] = useState<number>(0);
-  const [level, setLevel] = useState<CatLevel>('baby');
-  const [displayLevel, setDisplayLevel] = useState<CatLevel>('baby');
-  const [hasUnlockedAllAges, setHasUnlockedAllAges] = useState<boolean>(false);
-
-  const [wordsTypedCount, setWordsTypedCount] = useState<number>(0);
-  const [streakDays, setStreakDays] = useState<number>(1);
-  const [achievements, setAchievements] = useState<AchievementItem[]>(INITIAL_ACHIEVEMENTS);
-  const [localRecords, setLocalRecords] = useState<ScoreRecord[]>([]);
+  const [wordsTypedCount, setWordsTypedCount] = useState<number>(initialSave.wordsTypedCount);
+  const [streakDays, setStreakDays] = useState<number>(initialSave.streakDays);
+  const [claimedQuestIds, setClaimedQuestIds] = useState<string[]>(initialSave.claimedQuestIds);
+  const [unlockedQuestIds, setUnlockedQuestIds] = useState<string[]>(initialSave.unlockedQuestIds);
+  const [questCounters, setQuestCounters] = useState<QuestProgressCounters>(initialSave.questCounters);
+  const [localRecords, setLocalRecords] = useState<ScoreRecord[]>(initialSave.localRecords);
 
   // Sound and Virtual Keyboard settings
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
-  const [kbScale, setKbScale] = useState<number>(1);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(initialSave.soundEnabled);
+  const [kbScale, setKbScale] = useState<number>(initialSave.kbScale);
   const [isMobileMode, setIsMobileMode] = useState<boolean>(false);
 
   // Reward Workout Mode
   const [isRewardMode, setIsRewardMode] = useState<boolean>(false);
-  const [rewardSeconds, setRewardSeconds] = useState<number>(0);
+  const [rewardSeconds, setRewardSeconds] = useState<number>(initialSave.rewardSeconds);
   const [sessionWordCount, setSessionWordCount] = useState<number>(0);
   const [isRewardTimerActive, setIsRewardTimerActive] = useState<boolean>(false);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
@@ -190,202 +276,450 @@ export default function App() {
   const [showHelp, setShowHelp] = useState<boolean>(false);
   const [showLevelUpNotice, setShowLevelUpNotice] = useState<boolean>(false);
 
+  // Quest completion announcement state
+  const [questAnnounceMessage, setQuestAnnounceMessage] = useState<string | null>(null);
+
+  // Guard so cloud auto-save NEVER overwrites Firestore before loadUserProfile completes
+  const isCloudHydratedRef = useRef<boolean>(false);
+  // Track whether user actively typed in this session before cloud profile finished loading
+  const typedInCurrentSessionRef = useRef<boolean>(false);
+
+  const stateSnapshotRef = useRef({
+    stats,
+    statsDate,
+    xp,
+    level,
+    displayLevel,
+    hasUnlockedAllAges,
+    wordsTypedCount,
+    streakDays,
+    rewardSeconds,
+    claimedQuestIds,
+    unlockedQuestIds,
+    questCounters,
+    playerName
+  });
+  stateSnapshotRef.current = {
+    stats,
+    statsDate,
+    xp,
+    level,
+    displayLevel,
+    hasUnlockedAllAges,
+    wordsTypedCount,
+    streakDays,
+    rewardSeconds,
+    claimedQuestIds,
+    unlockedQuestIds,
+    questCounters,
+    playerName
+  };
+
   // Test Firebase on startup
   useEffect(() => {
     testConnection();
   }, []);
 
-  // Listen to Auth State
+  // Listen to Auth State & Perform Safe Cross-Device Cloud Merge (Account-authoritative for same-day vs new-day scales)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
+      if (!currentUser) {
+        isCloudHydratedRef.current = false;
+        setUser(null);
+        return;
+      }
 
-      if (currentUser) {
-        // Load cloud progress
+      isCloudHydratedRef.current = false;
+      setUser(currentUser);
+      if (currentUser.displayName && !stateSnapshotRef.current.playerName) {
+        setPlayerName(currentUser.displayName);
+      }
+
+      try {
         const cloudData = await loadUserProfile(currentUser.uid);
+        const snap = stateSnapshotRef.current;
+        const todayStr = getTodayLocalDateString();
+
         if (cloudData) {
-          if (cloudData.xp !== undefined) setXp(prev => Math.max(prev, cloudData.xp));
-          if (cloudData.wordsTypedCount) setWordsTypedCount(prev => Math.max(prev, cloudData.wordsTypedCount));
-          if (cloudData.stats) setStats(cloudData.stats);
-          if (cloudData.streakDays) setStreakDays(cloudData.streakDays);
-        } else {
-          saveUserProfile({
+          const cloudXp = typeof cloudData.xp === 'number' ? cloudData.xp : 0;
+          const mergedXp = Math.max(snap.xp, cloudXp);
+          const mergedLevel = getCatLevelFromXp(mergedXp);
+          // True maximum is 'cosmic' at 12000 XP; do not unlock cosmic early on 7300 XP accounts!
+          const mergedUnlockedAll = mergedLevel === 'cosmic';
+
+          const preferredDisplay =
+            cloudData.displayLevel && (cloudXp >= snap.xp || snap.displayLevel === 'baby')
+              ? cloudData.displayLevel
+              : snap.displayLevel;
+          const mergedDisplayLevel: CatLevel = clampDisplayLevelToUnlocked(
+            preferredDisplay,
+            mergedXp,
+            mergedLevel
+          );
+
+          const mergedWords = Math.max(snap.wordsTypedCount, cloudData.wordsTypedCount || 0);
+          const mergedStreak = Math.max(snap.streakDays, cloudData.streakDays || 1);
+          const mergedReward = Math.max(snap.rewardSeconds, cloudData.rewardSeconds || 0);
+
+          const cc = (cloudData.questCounters || {}) as Record<string, number | string>;
+          const cloudStatsDate = cloudData.statsDate || cloudData.lastActiveDate || String(cc.dailyDate || '');
+          const isCloudFromToday = cloudStatsDate === todayStr;
+
+          // Daily scales logic from account:
+          // - If account was saved TODAY (e.g. entered at 7 AM, exited, came back at 9 PM): restore account scales!
+          // - If account was last saved on ANOTHER day: scales are empty (0%), unless user already typed words right now in this session.
+          let mergedStats: PetStats;
+          if (isCloudFromToday && cloudData.stats) {
+            if (typedInCurrentSessionRef.current) {
+              mergedStats = {
+                hunger: Math.max(snap.stats.hunger, Number(cloudData.stats.hunger ?? 0)),
+                sleep: Math.max(snap.stats.sleep, Number(cloudData.stats.sleep ?? 0)),
+                clean: Math.max(snap.stats.clean, Number(cloudData.stats.clean ?? 0)),
+                happiness: Math.max(snap.stats.happiness, Number(cloudData.stats.happiness ?? 0)),
+                intelligence: Math.max(snap.stats.intelligence, Number(cloudData.stats.intelligence ?? 0)),
+              };
+            } else {
+              mergedStats = {
+                hunger: Number(cloudData.stats.hunger ?? 0),
+                sleep: Number(cloudData.stats.sleep ?? 0),
+                clean: Number(cloudData.stats.clean ?? 0),
+                happiness: Number(cloudData.stats.happiness ?? 0),
+                intelligence: Number(cloudData.stats.intelligence ?? 0),
+              };
+            }
+          } else {
+            mergedStats = typedInCurrentSessionRef.current ? snap.stats : { ...EMPTY_PET_STATS };
+          }
+
+          const mergedClaimed = Array.from(
+            new Set([
+              ...snap.claimedQuestIds,
+              ...(Array.isArray(cloudData.claimedQuestIds) ? cloudData.claimedQuestIds : []),
+              ...(Array.isArray(cloudData.dailyAchievements) ? cloudData.dailyAchievements : []),
+            ])
+          );
+
+          const mergedUnlocked = Array.from(
+            new Set([
+              ...snap.unlockedQuestIds,
+              ...(Array.isArray(cloudData.unlockedQuestIds) ? cloudData.unlockedQuestIds : []),
+              ...mergedClaimed,
+            ])
+          );
+
+          const cloudSameDay = cc.dailyDate === todayStr;
+
+          const mergedCounters: QuestProgressCounters = {
+            dailyDate: todayStr,
+            dailyWords: Math.max(snap.questCounters.dailyWords, cloudSameDay ? Number(cc.dailyWords || 0) : 0),
+            dailyFeedings: Math.max(snap.questCounters.dailyFeedings, cloudSameDay ? Number(cc.dailyFeedings || 0) : 0),
+            dailyCareActions: Math.max(snap.questCounters.dailyCareActions, cloudSameDay ? Number(cc.dailyCareActions || 0) : 0),
+            dailyRiddlesMathSport: Math.max(snap.questCounters.dailyRiddlesMathSport, cloudSameDay ? Number(cc.dailyRiddlesMathSport || 0) : 0),
+            dailyMarathons: Math.max(snap.questCounters.dailyMarathons, cloudSameDay ? Number(cc.dailyMarathons || 0) : 0),
+            dailySpeedTexts: Math.max(snap.questCounters.dailySpeedTexts, cloudSameDay ? Number(cc.dailySpeedTexts || 0) : 0),
+            dailySprintLetters: Math.max(snap.questCounters.dailySprintLetters, cloudSameDay ? Number(cc.dailySprintLetters || 0) : 0),
+            dailyChatMessages: Math.max(snap.questCounters.dailyChatMessages, cloudSameDay ? Number(cc.dailyChatMessages || 0) : 0),
+            totalWords: Math.max(mergedWords, snap.questCounters.totalWords, Number(cc.totalWords || 0)),
+            totalMarathons: Math.max(snap.questCounters.totalMarathons, Number(cc.totalMarathons || 0)),
+            totalSpeedTexts: Math.max(snap.questCounters.totalSpeedTexts, Number(cc.totalSpeedTexts || 0)),
+            totalSprintLetters: Math.max(snap.questCounters.totalSprintLetters, Number(cc.totalSprintLetters || 0)),
+            totalRiddles: Math.max(snap.questCounters.totalRiddles, Number(cc.totalRiddles || 0)),
+            totalMath: Math.max(snap.questCounters.totalMath, Number(cc.totalMath || 0)),
+            totalSport: Math.max(snap.questCounters.totalSport, Number(cc.totalSport || 0)),
+            totalFeedings: Math.max(snap.questCounters.totalFeedings, Number(cc.totalFeedings || 0)),
+            totalWashings: Math.max(snap.questCounters.totalWashings, Number(cc.totalWashings || 0)),
+            totalSleeps: Math.max(snap.questCounters.totalSleeps, Number(cc.totalSleeps || 0)),
+            totalPlays: Math.max(snap.questCounters.totalPlays, Number(cc.totalPlays || 0)),
+            totalChats: Math.max(snap.questCounters.totalChats, Number(cc.totalChats || 0)),
+            maxWpm: Math.max(snap.questCounters.maxWpm, Number(cc.maxWpm || 0)),
+            highAccuracyTexts: Math.max(snap.questCounters.highAccuracyTexts, Number(cc.highAccuracyTexts || 0)),
+            recordsSaved: Math.max(snap.questCounters.recordsSaved, Number(cc.recordsSaved || 0)),
+          };
+
+          setXp(mergedXp);
+          setLevel(mergedLevel);
+          setDisplayLevel(mergedDisplayLevel);
+          setHasUnlockedAllAges(mergedUnlockedAll);
+          setWordsTypedCount(mergedWords);
+          setStreakDays(mergedStreak);
+          setRewardSeconds(mergedReward);
+          setStats(mergedStats);
+          setStatsDate(todayStr);
+          setClaimedQuestIds(mergedClaimed);
+          setUnlockedQuestIds(mergedUnlocked);
+          setQuestCounters(mergedCounters);
+
+          isCloudHydratedRef.current = true;
+
+          await saveUserProfile({
             uid: currentUser.uid,
-            displayName: currentUser.displayName || 'Юный игрок',
+            displayName: currentUser.displayName || snap.playerName || 'Юный игрок',
             photoURL: currentUser.photoURL || undefined,
-            xp,
-            level,
-            wordsTypedCount,
-            stats,
-            streakDays,
+            xp: mergedXp,
+            level: mergedLevel,
+            displayLevel: mergedDisplayLevel,
+            hasUnlockedAllAges: mergedUnlockedAll,
+            wordsTypedCount: mergedWords,
+            rewardSeconds: mergedReward,
+            stats: mergedStats,
+            statsDate: todayStr,
+            claimedQuestIds: mergedClaimed,
+            unlockedQuestIds: mergedUnlocked,
+            questCounters: mergedCounters as unknown as Record<string, number | string>,
+            streakDays: mergedStreak,
+            lastActiveDate: todayStr,
+            updatedAt: new Date().toISOString()
+          });
+        } else {
+          // First time this Google account logs in: upload current local progress to cloud
+          isCloudHydratedRef.current = true;
+          await saveUserProfile({
+            uid: currentUser.uid,
+            displayName: currentUser.displayName || snap.playerName || 'Юный игрок',
+            photoURL: currentUser.photoURL || undefined,
+            xp: snap.xp,
+            level: snap.level,
+            displayLevel: snap.displayLevel,
+            hasUnlockedAllAges: snap.hasUnlockedAllAges,
+            wordsTypedCount: snap.wordsTypedCount,
+            rewardSeconds: snap.rewardSeconds,
+            stats: snap.stats,
+            statsDate: todayStr,
+            claimedQuestIds: snap.claimedQuestIds,
+            unlockedQuestIds: snap.unlockedQuestIds,
+            questCounters: snap.questCounters as unknown as Record<string, number | string>,
+            streakDays: snap.streakDays,
+            lastActiveDate: todayStr,
             updatedAt: new Date().toISOString()
           });
         }
+      } catch (err) {
+        console.warn('Cloud profile sync warning:', err);
+        isCloudHydratedRef.current = true;
       }
     });
 
     return () => unsubscribe();
   }, []);
 
-  // Load local state from localStorage on boot
+  // Evaluate all 36 quests (6 daily + 30 long-term)
+  const achievements = useMemo(() => {
+    return evaluateAllQuests({
+      counters: questCounters,
+      stats,
+      xp,
+      streakDays,
+      hasUnlockedAllAges,
+      claimedIds: claimedQuestIds,
+      previouslyUnlockedIds: unlockedQuestIds
+    });
+  }, [questCounters, stats, xp, streakDays, hasUnlockedAllAges, claimedQuestIds, unlockedQuestIds]);
+
+  // Detect newly unlocked quests to announce with cat voice & blinking green badge
+  const knownUnlockedRef = useRef<Set<string>>(
+    new Set(
+      evaluateAllQuests({
+        counters: initialSave.questCounters,
+        stats: initialSave.stats,
+        xp: initialSave.xp,
+        streakDays: initialSave.streakDays,
+        hasUnlockedAllAges: initialSave.hasUnlockedAllAges,
+        claimedIds: initialSave.claimedQuestIds,
+        previouslyUnlockedIds: initialSave.unlockedQuestIds
+      })
+        .filter(a => a.isUnlocked)
+        .map(a => a.id)
+    )
+  );
+
   useEffect(() => {
-    const saved = localStorage.getItem('typecat_save_v32');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed.stats) setStats(parsed.stats);
-        if (parsed.xp !== undefined) setXp(parsed.xp);
-        if (parsed.level) setLevel(parsed.level);
-        if (parsed.displayLevel) setDisplayLevel(parsed.displayLevel);
-        if (parsed.hasUnlockedAllAges) setHasUnlockedAllAges(parsed.hasUnlockedAllAges);
-        if (parsed.wordsTypedCount) setWordsTypedCount(parsed.wordsTypedCount);
-        if (parsed.streakDays) setStreakDays(parsed.streakDays);
-        if (parsed.soundEnabled !== undefined) setSoundEnabled(parsed.soundEnabled);
-        if (parsed.kbScale) setKbScale(parsed.kbScale);
-        if (parsed.rewardSeconds) setRewardSeconds(parsed.rewardSeconds);
-        if (parsed.achievements && Array.isArray(parsed.achievements)) {
-          setAchievements(INITIAL_ACHIEVEMENTS.map(initial => {
-            const existing = parsed.achievements.find((a: AchievementItem) => a.id === initial.id);
-            if (existing) {
-              return {
-                ...initial,
-                isUnlocked: Boolean(existing.isUnlocked),
-                unlockedAt: existing.unlockedAt,
-                isClaimed: Boolean(existing.isClaimed)
-              };
-            }
-            return initial;
-          }));
+    let foundNew = false;
+    const newlyUnlockedIds: string[] = [];
+
+    for (const ach of achievements) {
+      if (ach.isUnlocked && !knownUnlockedRef.current.has(ach.id)) {
+        knownUnlockedRef.current.add(ach.id);
+        newlyUnlockedIds.push(ach.id);
+        if (!ach.isClaimed) {
+          foundNew = true;
         }
-        if (parsed.localRecords) setLocalRecords(parsed.localRecords);
-      } catch (e) {
-        console.error("Local save load error:", e);
       }
     }
-  }, []);
 
-  // Auto save to localStorage & Firestore
+    if (newlyUnlockedIds.length > 0) {
+      setUnlockedQuestIds(prev => Array.from(new Set([...prev, ...newlyUnlockedIds])));
+    }
+
+    if (foundNew) {
+      if (soundEnabled) {
+        playSuccessFanfare();
+        speakRussianText("Ты выполнил квест! Забери награду!");
+      }
+      setQuestAnnounceMessage("Ты выполнил квест, забери награду! 🎯");
+    }
+  }, [achievements, soundEnabled]);
+
+  // Auto save to localStorage (always, including Guest mode) & Firestore (when logged in and hydrated)
   useEffect(() => {
-    const payload = {
+    const todayStr = getTodayLocalDateString();
+    const payload: InitialLocalSave = {
       stats,
+      statsDate: todayStr,
       xp,
       level,
       displayLevel,
       hasUnlockedAllAges,
       wordsTypedCount,
       streakDays,
+      lastActiveDate: todayStr,
       soundEnabled,
       kbScale,
       rewardSeconds,
-      achievements,
-      localRecords
+      claimedQuestIds,
+      unlockedQuestIds,
+      questCounters,
+      localRecords,
+      playerName
     };
-    localStorage.setItem('typecat_save_v32', JSON.stringify(payload));
+    localStorage.setItem(LOCAL_SAVE_KEY, JSON.stringify(payload));
 
-    if (user) {
+    if (user && isCloudHydratedRef.current) {
       saveUserProfile({
         uid: user.uid,
-        displayName: user.displayName || 'Юный игрок',
+        displayName: user.displayName || playerName || 'Юный игрок',
         photoURL: user.photoURL || undefined,
         xp,
         level,
+        displayLevel,
+        hasUnlockedAllAges,
         wordsTypedCount,
+        rewardSeconds,
         stats,
+        statsDate: todayStr,
+        claimedQuestIds,
+        unlockedQuestIds,
+        questCounters: questCounters as unknown as Record<string, number | string>,
         streakDays,
+        lastActiveDate: todayStr,
         updatedAt: new Date().toISOString()
       });
     }
-  }, [stats, xp, level, displayLevel, hasUnlockedAllAges, wordsTypedCount, streakDays, soundEnabled, kbScale, rewardSeconds, achievements, localRecords, user]);
+  }, [
+    stats,
+    xp,
+    level,
+    displayLevel,
+    hasUnlockedAllAges,
+    wordsTypedCount,
+    streakDays,
+    soundEnabled,
+    kbScale,
+    rewardSeconds,
+    claimedQuestIds,
+    unlockedQuestIds,
+    questCounters,
+    localRecords,
+    playerName,
+    user
+  ]);
 
-  // Quest completion announcement state
-  const [questAnnounceMessage, setQuestAnnounceMessage] = useState<string | null>(null);
-
-  // Unlock achievement helper
-  const unlockAchievement = useCallback((id: string) => {
-    setAchievements(prev => {
-      let newlyUnlocked = false;
-      const updated = prev.map(item => {
-        if (item.id === id && !item.isUnlocked) {
-          newlyUnlocked = true;
-          return { ...item, isUnlocked: true, isClaimed: false };
-        }
-        return item;
-      });
-
-      if (newlyUnlocked) {
-        if (soundEnabled) {
-          playSuccessFanfare();
-          speakRussianText("Ты выполнил квест! Забери награду!");
-        }
-        setQuestAnnounceMessage("Ты выполнил квест, забери награду! 🎯");
-      }
-      return updated;
-    });
-  }, [soundEnabled]);
-
-  // Claim achievement reward
-  const handleClaimAchievement = useCallback((id: string, reward: number) => {
-    handleAddXp(reward);
-    setAchievements(prev =>
-      prev.map(item => (item.id === id ? { ...item, isClaimed: true } : item))
-    );
-    if (soundEnabled) playSuccessFanfare();
-  }, [soundEnabled]);
-
-  // Level calculations (Extended 2x-3x longer progression)
+  // Save on tab hide / exit and reset scales if calendar day changes
   useEffect(() => {
-    let nextLevel: CatLevel = 'baby';
-    if (xp >= 6000) nextLevel = 'master';
-    else if (xp >= 3800) nextLevel = 'smart';
-    else if (xp >= 2000) nextLevel = 'adult';
-    else if (xp >= 900) nextLevel = 'teen';
-    else if (xp >= 300) nextLevel = 'kitten';
+    const handleVisibilityOrUnload = () => {
+      const todayStr = getTodayLocalDateString();
+      const snap = stateSnapshotRef.current;
 
-    if (nextLevel === 'master') {
+      // If the user reopens an already-open tab on a new calendar day, reset all scales to 0%
+      if (document.visibilityState === 'visible' && snap.statsDate !== todayStr) {
+        setStats({ ...EMPTY_PET_STATS });
+        setStatsDate(todayStr);
+        return;
+      }
+
+      if (user && isCloudHydratedRef.current) {
+        saveUserProfile({
+          uid: user.uid,
+          displayName: user.displayName || snap.playerName || 'Юный игрок',
+          photoURL: user.photoURL || undefined,
+          xp: snap.xp,
+          level: snap.level,
+          displayLevel: snap.displayLevel,
+          hasUnlockedAllAges: snap.hasUnlockedAllAges,
+          wordsTypedCount: snap.wordsTypedCount,
+          rewardSeconds: snap.rewardSeconds,
+          stats: snap.stats,
+          statsDate: todayStr,
+          claimedQuestIds: snap.claimedQuestIds,
+          unlockedQuestIds: snap.unlockedQuestIds,
+          questCounters: snap.questCounters as unknown as Record<string, number | string>,
+          streakDays: snap.streakDays,
+          lastActiveDate: todayStr,
+          updatedAt: new Date().toISOString()
+        });
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrUnload);
+    window.addEventListener('beforeunload', handleVisibilityOrUnload);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrUnload);
+      window.removeEventListener('beforeunload', handleVisibilityOrUnload);
+    };
+  }, [user]);
+
+  // Legacy unlockAchievement callback compatibility
+  const unlockAchievement = useCallback((id: string) => {
+    setUnlockedQuestIds(prev => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
+
+  const handleAddXp = useCallback((amount: number) => {
+    typedInCurrentSessionRef.current = true;
+    setXp(prev => prev + amount);
+  }, []);
+
+  // Claim quest reward by ID
+  const handleClaimQuest = useCallback((id: string) => {
+    const target = achievements.find(a => a.id === id);
+    if (!target || target.isClaimed) return;
+    handleAddXp(target.xpReward);
+    setClaimedQuestIds(prev => (prev.includes(id) ? prev : [...prev, id]));
+    if (soundEnabled) playSuccessFanfare();
+    launchBigCelebration();
+  }, [achievements, handleAddXp, soundEnabled]);
+
+  // Level calculations including the 7th stage ('cosmic' at 12,000 XP)
+  useEffect(() => {
+    const nextLevel = getCatLevelFromXp(xp);
+
+    if (nextLevel === 'cosmic') {
       setHasUnlockedAllAges(true);
+    } else if (hasUnlockedAllAges && xp < 12000) {
+      setHasUnlockedAllAges(false);
+    }
+
+    // Ensure displayLevel never stays on 'cosmic' if xp < 12000
+    const validDisplay = clampDisplayLevelToUnlocked(displayLevel, xp, nextLevel);
+    if (validDisplay !== displayLevel) {
+      setDisplayLevel(validDisplay);
     }
 
     if (nextLevel !== level) {
       setLevel(nextLevel);
-      if (!hasUnlockedAllAges) {
-        setDisplayLevel(nextLevel);
-      }
+      setDisplayLevel(nextLevel);
       setShowLevelUpNotice(true);
       if (soundEnabled) playSuccessFanfare();
       launchBigCelebration();
       setTimeout(() => setShowLevelUpNotice(false), 3500);
-
-      if (nextLevel === 'master') {
-        unlockAchievement('grand_master');
-      }
     }
-  }, [xp, level, soundEnabled, hasUnlockedAllAges, unlockAchievement]);
-
-  // Check achievements on stat changes
-  useEffect(() => {
-    if (wordsTypedCount >= 1) unlockAchievement('first_word');
-    if (stats.happiness >= 99) unlockAchievement('happy_cat');
-    if (stats.hunger >= 70 && stats.sleep >= 70 && stats.clean >= 70 && stats.happiness >= 70 && stats.intelligence >= 70) {
-      unlockAchievement('careful_master');
-    }
-  }, [wordsTypedCount, stats, unlockAchievement]);
-
-  const handleAddXp = useCallback((amount: number) => {
-    setXp(prev => prev + amount);
-  }, []);
+  }, [xp, level, displayLevel, soundEnabled, hasUnlockedAllAges]);
 
   // Reset progress (cat growth)
   const handleResetProgress = () => {
     setXp(0);
     setLevel('baby');
     setDisplayLevel('baby');
-    setStats({
-      hunger: 18,
-      sleep: 20,
-      clean: 15,
-      happiness: 22,
-      intelligence: 16
-    });
+    setHasUnlockedAllAges(false);
+    setStats({ ...EMPTY_PET_STATS });
     if (soundEnabled) playSuccessFanfare();
   };
 
@@ -407,36 +741,25 @@ export default function App() {
     }
   };
 
-  // Save record callback
+  // Save record callback (saves both locally AND to global Top-50 Firestore leaderboard for all players!)
   const handleSaveScoreRecord = async (record: ScoreRecord) => {
     setLocalRecords(prev => [record, ...prev].slice(0, 50));
 
-    // Achievement checks
-    if (record.wpm >= 25) unlockAchievement('speed_demon');
-    if (record.mode === 'word_goal') unlockAchievement('marathon_runner');
-    if (record.accuracy >= 92 && (record.mode === 'speed_text' || record.mode === 'word_goal' || record.mode === 'letter_sprint')) {
-      unlockAchievement('keyboard_sniper');
-    }
-    if (record.mode === 'letter_sprint') {
-      try {
-        const todayKey = 'typecat_letters_daily_' + new Date().toISOString().slice(0, 10);
-        const stored = localStorage.getItem(todayKey);
-        const count = stored ? JSON.parse(stored).length : 0;
-        if (count >= 10) unlockAchievement('letter_hunter');
-      } catch (e) {}
-    }
+    setQuestCounters(prev => ({
+      ...prev,
+      maxWpm: Math.max(prev.maxWpm, record.wpm),
+      highAccuracyTexts: record.accuracy > 92 ? prev.highAccuracyTexts + 1 : prev.highAccuracyTexts,
+      recordsSaved: prev.recordsSaved + 1
+    }));
 
-    if (user) {
-      try {
-        await saveScoreRecord(record);
-      } catch (err) {
-        console.warn("Cloud record save error:", err);
-      }
+    try {
+      await saveScoreRecord(record);
+    } catch (err) {
+      console.warn("Cloud record save error:", err);
     }
   };
 
-  // Stat decay: every minute all indicators decrease by 2% of maximum (100 max -> 2.0 points per 60 seconds)
-  // We run an interval every 6 seconds with -0.2 points (10 ticks * 0.2 = 2.0% per 60s)
+  // Stat decay while actively playing: every minute all indicators decrease by 2% of maximum (2.0 points per 60 seconds)
   useEffect(() => {
     const interval = setInterval(() => {
       setStats(prev => ({
@@ -451,17 +774,104 @@ export default function App() {
   }, []);
 
   // Central word completion callback for all modes
-  const handleWordCompletedInAnyMode = useCallback((wordsCount: number = 1, charLength?: number) => {
+  const handleWordCompletedInAnyMode = useCallback((
+    wordsCount: number = 1,
+    charLength?: number,
+    meta?: { category?: string; activityType?: string }
+  ) => {
+    typedInCurrentSessionRef.current = true;
+    const todayStr = getTodayLocalDateString();
     setWordsTypedCount(c => c + wordsCount);
+    setStatsDate(todayStr);
+
+    setQuestCounters(prev => {
+      const sameDay = prev.dailyDate === todayStr;
+      const cat = meta?.category || '';
+      const act = meta?.activityType || 'standard';
+
+      const isFeed = cat === 'HUNGER';
+      const isClean = cat === 'CLEAN';
+      const isSleep = cat === 'SLEEP';
+      const isPlay = cat === 'HAPPINESS' || cat === 'LOVE' || cat === 'COMMANDS';
+      const isCare = isFeed || isClean || isSleep || isPlay;
+      const isRiddle = act === 'riddle' || cat === 'RIDDLE';
+      const isMath = act === 'math' || cat === 'MATH';
+      const isSport = act === 'sport' || cat === 'SPORT';
+      const isBrainOrSport = isRiddle || isMath || isSport;
+
+      return {
+        ...prev,
+        dailyDate: todayStr,
+        dailyWords: (sameDay ? prev.dailyWords : 0) + wordsCount,
+        dailyFeedings: (sameDay ? prev.dailyFeedings : 0) + (isFeed ? 1 : 0),
+        dailyCareActions: (sameDay ? prev.dailyCareActions : 0) + (isCare ? 1 : 0),
+        dailyRiddlesMathSport: (sameDay ? prev.dailyRiddlesMathSport : 0) + (isBrainOrSport ? 1 : 0),
+        dailyMarathons: sameDay ? prev.dailyMarathons : 0,
+        dailySpeedTexts: sameDay ? prev.dailySpeedTexts : 0,
+        dailySprintLetters: sameDay ? prev.dailySprintLetters : 0,
+        dailyChatMessages: sameDay ? prev.dailyChatMessages : 0,
+        totalWords: prev.totalWords + wordsCount,
+        totalRiddles: prev.totalRiddles + (isRiddle ? 1 : 0),
+        totalMath: prev.totalMath + (isMath ? 1 : 0),
+        totalSport: prev.totalSport + (isSport ? 1 : 0),
+        totalFeedings: prev.totalFeedings + (isFeed ? 1 : 0),
+        totalWashings: prev.totalWashings + (isClean ? 1 : 0),
+        totalSleeps: prev.totalSleeps + (isSleep ? 1 : 0),
+        totalPlays: prev.totalPlays + (isPlay ? 1 : 0),
+      };
+    });
 
     if (isRewardMode) {
       setSessionWordCount(c => c + wordsCount);
-      // Award 12 seconds per word (or 15s if longer word >= 6 letters)
       const secPerWord = (charLength && charLength >= 6) ? 15 : 12;
       const earnedSeconds = secPerWord * wordsCount;
       setRewardSeconds(s => s + earnedSeconds);
     }
   }, [isRewardMode]);
+
+  const handleSpeedTextCompleted = useCallback((wpm: number, accuracy: number) => {
+    const todayStr = getTodayLocalDateString();
+    setQuestCounters(prev => ({
+      ...prev,
+      dailyDate: todayStr,
+      dailySpeedTexts: (prev.dailyDate === todayStr ? prev.dailySpeedTexts : 0) + 1,
+      totalSpeedTexts: prev.totalSpeedTexts + 1,
+      maxWpm: Math.max(prev.maxWpm, wpm),
+      highAccuracyTexts: accuracy > 92 ? prev.highAccuracyTexts + 1 : prev.highAccuracyTexts
+    }));
+  }, []);
+
+  const handleMarathonCompleted = useCallback((wpm: number, accuracy: number) => {
+    const todayStr = getTodayLocalDateString();
+    setQuestCounters(prev => ({
+      ...prev,
+      dailyDate: todayStr,
+      dailyMarathons: (prev.dailyDate === todayStr ? prev.dailyMarathons : 0) + 1,
+      totalMarathons: prev.totalMarathons + 1,
+      maxWpm: Math.max(prev.maxWpm, wpm),
+      highAccuracyTexts: accuracy > 92 ? prev.highAccuracyTexts + 1 : prev.highAccuracyTexts
+    }));
+  }, []);
+
+  const handleLetterMastered = useCallback(() => {
+    const todayStr = getTodayLocalDateString();
+    setQuestCounters(prev => ({
+      ...prev,
+      dailyDate: todayStr,
+      dailySprintLetters: (prev.dailyDate === todayStr ? prev.dailySprintLetters : 0) + 1,
+      totalSprintLetters: prev.totalSprintLetters + 1
+    }));
+  }, []);
+
+  const handleChatSent = useCallback(() => {
+    const todayStr = getTodayLocalDateString();
+    setQuestCounters(prev => ({
+      ...prev,
+      dailyDate: todayStr,
+      dailyChatMessages: (prev.dailyDate === todayStr ? prev.dailyChatMessages : 0) + 1,
+      totalChats: prev.totalChats + 1
+    }));
+  }, []);
 
   // Reward Workout Timer Logic
   useEffect(() => {
@@ -505,7 +915,7 @@ export default function App() {
   const unclaimedQuestsCount = achievements.filter(a => a.isUnlocked && !a.isClaimed).length;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-sky-50 via-indigo-50/40 to-amber-50/50 text-slate-800 flex flex-col items-center p-2 sm:p-4 font-sans select-none overflow-x-hidden">
+    <div translate="no" className="notranslate min-h-screen bg-gradient-to-br from-sky-50 via-indigo-50/40 to-amber-50/50 text-slate-800 flex flex-col items-center p-2 sm:p-4 font-sans select-none overflow-x-hidden">
       
       {/* Level Up Notification Banner */}
       {showLevelUpNotice && (
@@ -667,13 +1077,17 @@ export default function App() {
           {currentMode === 'classic_pet' && (
             <ClassicPetMode
               stats={stats}
-              onUpdateStats={setStats}
+              onUpdateStats={(updater) => {
+                typedInCurrentSessionRef.current = true;
+                setStatsDate(getTodayLocalDateString());
+                setStats(updater);
+              }}
               xp={xp}
               level={level}
               displayLevel={displayLevel}
               onAddXp={handleAddXp}
               wordsTypedCount={wordsTypedCount}
-              onIncrementWordsCount={() => setWordsTypedCount(c => c + 1)}
+              onIncrementWordsCount={() => {}}
               soundEnabled={soundEnabled}
               kbScale={kbScale}
               onSetKbScale={setKbScale}
@@ -694,6 +1108,8 @@ export default function App() {
           {currentMode === 'speed_text' && (
             <SpeedTextMode
               user={user}
+              playerName={playerName}
+              onChangePlayerName={setPlayerName}
               soundEnabled={soundEnabled}
               onSaveRecord={handleSaveScoreRecord}
               onAddXp={handleAddXp}
@@ -703,12 +1119,15 @@ export default function App() {
               onToggleMobileMode={() => setIsMobileMode(!isMobileMode)}
               isRewardMode={isRewardMode}
               onWordCompleted={handleWordCompletedInAnyMode}
+              onSpeedTextCompleted={handleSpeedTextCompleted}
             />
           )}
 
           {currentMode === 'word_goal' && (
             <WordGoalMode
               user={user}
+              playerName={playerName}
+              onChangePlayerName={setPlayerName}
               soundEnabled={soundEnabled}
               onSaveRecord={handleSaveScoreRecord}
               onAddXp={handleAddXp}
@@ -718,12 +1137,15 @@ export default function App() {
               onToggleMobileMode={() => setIsMobileMode(!isMobileMode)}
               isRewardMode={isRewardMode}
               onWordCompleted={handleWordCompletedInAnyMode}
+              onMarathonCompleted={handleMarathonCompleted}
             />
           )}
 
           {currentMode === 'letter_sprint' && (
             <LetterSprintMode
               user={user}
+              playerName={playerName}
+              onChangePlayerName={setPlayerName}
               soundEnabled={soundEnabled}
               onSaveRecord={handleSaveScoreRecord}
               onAddXp={handleAddXp}
@@ -734,6 +1156,7 @@ export default function App() {
               isRewardMode={isRewardMode}
               onWordCompleted={handleWordCompletedInAnyMode}
               onUnlockAchievement={unlockAchievement}
+              onLetterMastered={handleLetterMastered}
             />
           )}
 
@@ -741,16 +1164,14 @@ export default function App() {
             <CatChatMode
               catLevel={displayLevel}
               soundEnabled={soundEnabled}
-              onAddXp={(amount) => {
-                handleAddXp(amount);
-                unlockAchievement('chat_friend');
-              }}
+              onAddXp={handleAddXp}
               kbScale={kbScale}
               onSetKbScale={setKbScale}
               isMobileMode={isMobileMode}
               onToggleMobileMode={() => setIsMobileMode(!isMobileMode)}
               isRewardMode={isRewardMode}
               onWordCompleted={handleWordCompletedInAnyMode}
+              onChatSent={handleChatSent}
             />
           )}
         </main>
@@ -768,25 +1189,26 @@ export default function App() {
         onResetProgress={handleResetProgress}
       />
 
-      {/* Dedicated Daily Quests Modal */}
+      {/* Dedicated Quests Modal (6 Daily 5-min Quests + 30 Long-term Quests) */}
       <DailyQuestsModal
         isOpen={showQuestsModal}
         onClose={() => setShowQuestsModal(false)}
         achievements={achievements}
-        onClaimAchievement={handleClaimAchievement}
+        onClaimQuest={handleClaimQuest}
         streakDays={streakDays}
+        wordsTypedCount={wordsTypedCount}
       />
 
-      {/* Leaderboard Modal */}
+      {/* Leaderboard Modal (1. Personal Self-Competition  2. Global Top-50) */}
       <LeaderboardModal
         isOpen={showLeaderboard}
         onClose={() => setShowLeaderboard(false)}
-        user={user}
-        onLogin={handleGoogleLogin}
-        achievements={achievements}
-        onClaimAchievement={handleClaimAchievement}
-        streakDays={streakDays}
         localRecords={localRecords}
+        currentUserId={user?.uid}
+        playerName={playerName}
+        onChangePlayerName={setPlayerName}
+        streakDays={streakDays}
+        wordsTypedCount={wordsTypedCount}
       />
 
       {/* Help Modal */}

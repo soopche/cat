@@ -31,6 +31,8 @@ import { User } from 'firebase/auth';
 
 interface LetterSprintModeProps {
   user: User | null;
+  playerName?: string;
+  onChangePlayerName?: (name: string) => void;
   soundEnabled: boolean;
   onSaveRecord: (rec: ScoreRecord) => void;
   onAddXp: (amount: number) => void;
@@ -41,10 +43,12 @@ interface LetterSprintModeProps {
   isRewardMode?: boolean;
   onWordCompleted?: (wordsCount?: number, charLength?: number) => void;
   onUnlockAchievement?: (id: string) => void;
+  onLetterMastered?: () => void;
 }
 
 export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
   user,
+  playerName = '',
   soundEnabled,
   onSaveRecord,
   onAddXp,
@@ -54,7 +58,8 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
   onToggleMobileMode,
   isRewardMode,
   onWordCompleted,
-  onUnlockAchievement
+  onUnlockAchievement,
+  onLetterMastered
 }) => {
   // Configuration
   const [wordsPerLetter, setWordsPerLetter] = useState<number>(5);
@@ -168,6 +173,7 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
       // Completed letter goal!
       if (soundEnabled) playSuccessFanfare();
       launchConfetti();
+      onLetterMastered?.();
       setLettersMastered(prev => {
         const nextList = [...prev, currentLetter];
         // Track daily letters mastered in localStorage
@@ -212,7 +218,8 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
     currentWord, 
     pickNewLetter,
     onWordCompleted,
-    onUnlockAchievement
+    onUnlockAchievement,
+    onLetterMastered
   ]);
 
   // Handle character input
@@ -259,17 +266,18 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
     const durationMinutes = Math.max(0.1, totalDurationSeconds / 60);
     const calculatedWpm = Math.round(totalWordsCompleted / durationMinutes);
 
+    const effectiveName = (playerName && playerName.trim()) || user?.displayName || 'Буквенный следопыт';
     const record: ScoreRecord = {
       id: 'letter_sprint_' + Date.now(),
       userId: user ? user.uid : 'guest_' + Math.random().toString(36).substring(2, 8),
-      userName: user?.displayName || 'Буквенный следопыт',
+      userName: effectiveName,
       userPhoto: user?.photoURL || undefined,
       mode: 'letter_sprint',
       wpm: calculatedWpm,
       cpm: Math.round(calculatedWpm * 5),
       accuracy: 98,
       wordsCount: totalWordsCompleted,
-      timeSeconds: totalDurationSeconds,
+      timeSeconds: Math.max(1, totalDurationSeconds),
       details: `Освоено букв: ${lettersMastered.length}, слов: ${totalWordsCompleted}`,
       createdAt: new Date().toISOString()
     };
@@ -281,7 +289,7 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
   const currentEmoji = WORD_EMOJIS[currentWord] || '🔤';
 
   return (
-    <div className="w-full max-w-5xl flex flex-col items-center gap-3">
+    <div translate="no" className="notranslate w-full max-w-5xl flex flex-col items-center gap-3">
       {/* Top Setting or Status Bar */}
       {!isPlaying && !isFinished ? (
         <div className="w-full bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200 flex flex-col items-center gap-6">

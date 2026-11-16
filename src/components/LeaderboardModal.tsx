@@ -1,111 +1,166 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { 
   Trophy, 
   X, 
-  Flame, 
-  CheckCircle2, 
-  Clock, 
+  Medal, 
   Zap, 
-  Target, 
-  BookmarkCheck, 
-  Sparkles,
-  Cloud,
-  UserCheck
+  Clock, 
+  CheckCircle2, 
+  RefreshCw, 
+  Flame, 
+  User as UserIcon, 
+  Globe, 
+  TrendingUp, 
+  Award,
+  Edit3
 } from 'lucide-react';
-import { ScoreRecord, fetchLeaderboard } from '../firebase';
-import { User } from 'firebase/auth';
-import { AchievementItem } from '../types';
+import { fetchLeaderboard, ScoreRecord } from '../firebase';
 
 interface LeaderboardModalProps {
   isOpen: boolean;
   onClose: () => void;
-  user: User | null;
-  onLogin: () => void;
-  achievements: AchievementItem[];
-  onClaimAchievement: (id: string, reward: number) => void;
-  streakDays: number;
   localRecords: ScoreRecord[];
+  currentUserId?: string;
+  playerName?: string;
+  onChangePlayerName?: (name: string) => void;
+  streakDays: number;
+  wordsTypedCount: number;
 }
 
 export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
   isOpen,
   onClose,
-  user,
-  onLogin,
-  achievements,
-  onClaimAchievement,
+  localRecords,
+  currentUserId,
+  playerName = '',
+  onChangePlayerName,
   streakDays,
-  localRecords
+  wordsTypedCount
 }) => {
-  const [activeTab, setActiveTab] = useState<'leaderboard' | 'achievements'>('leaderboard');
-  const [selectedModeFilter, setSelectedModeFilter] = useState<string>('all');
+  const [activeTab, setActiveTab] = useState<'personal' | 'global'>('personal');
+  const [filterMode, setFilterMode] = useState<string>('all');
   const [cloudRecords, setCloudRecords] = useState<ScoreRecord[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(false);
+
+  const loadScores = async () => {
+    setLoading(true);
+    try {
+      const records = await fetchLeaderboard(filterMode);
+      setCloudRecords(records);
+    } catch (err) {
+      console.warn("Could not load cloud leaderboard, using local fallback:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (!isOpen) return;
-    setIsLoading(true);
-    fetchLeaderboard(selectedModeFilter)
-      .then(records => {
-        setCloudRecords(records);
-      })
-      .catch(err => {
-        console.warn("Could not fetch remote leaderboard, using local records:", err);
-      })
-      .finally(() => {
-        setIsLoading(false);
+    if (isOpen) {
+      loadScores();
+    }
+  }, [isOpen, filterMode]);
+
+  // Combine cloud + local records for Global Top-50
+  const globalTop50 = useMemo(() => {
+    const map = new Map<string, ScoreRecord>();
+    localRecords.forEach(r => {
+      if (filterMode === 'all' || r.mode === filterMode) {
+        map.set(r.id, r);
+      }
+    });
+    cloudRecords.forEach(r => {
+      if (filterMode === 'all' || r.mode === filterMode) {
+        map.set(r.id, r);
+      }
+    });
+    return Array.from(map.values())
+      .sort((a, b) => b.wpm - a.wpm || b.accuracy - a.accuracy)
+      .slice(0, 50);
+  }, [localRecords, cloudRecords, filterMode]);
+
+  // Personal records (from local device + cloud records belonging to currentUserId)
+  const personalRecords = useMemo(() => {
+    const map = new Map<string, ScoreRecord>();
+    localRecords.forEach(r => {
+      if (filterMode === 'all' || r.mode === filterMode) {
+        map.set(r.id, r);
+      }
+    });
+    if (currentUserId) {
+      cloudRecords.forEach(r => {
+        if (r.userId === currentUserId && (filterMode === 'all' || r.mode === filterMode)) {
+          map.set(r.id, r);
+        }
       });
-  }, [isOpen, selectedModeFilter]);
+    }
+    return Array.from(map.values()).sort((a, b) => b.wpm - a.wpm || b.accuracy - a.accuracy);
+  }, [localRecords, cloudRecords, currentUserId, filterMode]);
+
+  // Self-competition metrics (compare personal best and recent progress)
+  const personalStats = useMemo(() => {
+    if (personalRecords.length === 0) {
+      return {
+        bestWpm: 0,
+        bestAccuracy: 0,
+        avgWpm: 0,
+        improvementDelta: 0,
+        totalRuns: 0
+      };
+    }
+    const bestWpm = Math.max(...personalRecords.map(r => r.wpm));
+    const bestAccuracy = Math.max(...personalRecords.map(r => r.accuracy));
+    const avgWpm = Math.round(
+      personalRecords.reduce((sum, r) => sum + r.wpm, 0) / personalRecords.length
+    );
+    const byDate = [...personalRecords].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+    const firstWpm = byDate[0]?.wpm || 0;
+    const latestWpm = byDate[byDate.length - 1]?.wpm || 0;
+    const improvementDelta = byDate.length >= 2 ? latestWpm - firstWpm : 0;
+
+    return {
+      bestWpm,
+      bestAccuracy,
+      avgWpm,
+      improvementDelta,
+      totalRuns: personalRecords.length
+    };
+  }, [personalRecords]);
 
   if (!isOpen) return null;
 
-  // Merge cloud records and local records
-  const allRecords = [...cloudRecords];
-  localRecords.forEach(local => {
-    if (!allRecords.some(r => r.id === local.id)) {
-      if (selectedModeFilter === 'all' || local.mode === selectedModeFilter) {
-        allRecords.push(local);
-      }
-    }
-  });
-
-  // Sort descending by WPM
-  allRecords.sort((a, b) => b.wpm - a.wpm);
-
-  const getModeBadge = (mode: string) => {
+  const getModeName = (mode: string) => {
     switch (mode) {
-      case 'speed_text':
-        return <span className="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded-full font-bold">Скорость</span>;
-      case 'word_goal':
-        return <span className="bg-emerald-100 text-emerald-800 text-[10px] px-2 py-0.5 rounded-full font-bold">Марафон</span>;
-      case 'letter_sprint':
-        return <span className="bg-purple-100 text-purple-800 text-[10px] px-2 py-0.5 rounded-full font-bold">Буквы</span>;
-      default:
-        return <span className="bg-slate-100 text-slate-800 text-[10px] px-2 py-0.5 rounded-full font-bold">Питомец</span>;
+      case 'speed_text': return 'Скорость текста';
+      case 'word_goal': return 'Марафон слов';
+      case 'letter_sprint': return 'Буквенный спринт';
+      default: return 'Питомец';
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 animate-fade-in">
-      <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl border border-slate-200 flex flex-col max-h-[85vh] overflow-hidden">
+    <div translate="no" className="notranslate fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-2 sm:p-4 animate-fade-in">
+      <div className="bg-white rounded-3xl w-full max-w-3xl shadow-2xl border border-slate-200 flex flex-col max-h-[90vh] overflow-hidden">
         
-        {/* Modal Header */}
-        <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-2xl bg-indigo-500 text-white flex items-center justify-center shadow-md shadow-indigo-200">
-              <Trophy className="w-5 h-5" />
+        {/* Top Modal Header */}
+        <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-amber-50 via-orange-50/40 to-indigo-50/30">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-amber-400 text-slate-950 rounded-2xl shadow-md shadow-amber-200">
+              <Trophy className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-xl font-black text-slate-800">
-                Рекорды и Достижения
+              <h2 className="text-lg sm:text-xl font-black text-slate-800">
+                Зал Славы и Таблица Рекордов
               </h2>
               <p className="text-xs text-slate-500">
-                Отслеживай свой прогресс и соревнуйся с другими юными мастерами!
+                Побеждай свои прошлые рекорды и попадай в мировой Топ-50 игроков!
               </p>
             </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
             className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition"
           >
@@ -113,157 +168,223 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
           </button>
         </div>
 
-        {/* Tabs Bar */}
-        <div className="flex border-b border-slate-200 px-4 pt-2 gap-2 bg-white">
+        {/* Two Main Tabs: 1. Соревнование с собой  2. Мировой Топ-50 */}
+        <div className="flex border-b border-slate-100 bg-slate-50/70 px-3 sm:px-5 pt-2.5 gap-2">
           <button
-            onClick={() => setActiveTab('leaderboard')}
-            className={`flex items-center gap-1.5 pb-2.5 px-3 font-bold text-xs sm:text-sm border-b-2 transition ${
-              activeTab === 'leaderboard'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
+            type="button"
+            onClick={() => setActiveTab('personal')}
+            className={`flex-1 py-2.5 px-3 rounded-t-2xl font-black text-xs sm:text-sm border-b-2 transition flex items-center justify-center gap-2 ${
+              activeTab === 'personal'
+                ? 'border-emerald-600 text-emerald-700 bg-white shadow-sm'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
             }`}
           >
-            <Trophy className="w-4 h-4" />
-            <span>Таблица рекордов</span>
+            <UserIcon className="w-4 h-4 text-emerald-600" />
+            <span>1. Соревнование с собой</span>
+            <span className="px-2 py-0.5 text-[10px] rounded-full bg-emerald-100 text-emerald-800 font-bold">
+              {personalRecords.length}
+            </span>
           </button>
 
           <button
-            onClick={() => setActiveTab('achievements')}
-            className={`flex items-center gap-1.5 pb-2.5 px-3 font-bold text-xs sm:text-sm border-b-2 transition ${
-              activeTab === 'achievements'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
+            type="button"
+            onClick={() => setActiveTab('global')}
+            className={`flex-1 py-2.5 px-3 rounded-t-2xl font-black text-xs sm:text-sm border-b-2 transition flex items-center justify-center gap-2 ${
+              activeTab === 'global'
+                ? 'border-amber-500 text-amber-700 bg-white shadow-sm'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
             }`}
           >
-            <Sparkles className="w-4 h-4" />
-            <span>Ежедневные квесты</span>
+            <Globe className="w-4 h-4 text-amber-500" />
+            <span>2. Мировой Топ-50 игроков</span>
+            <span className="px-2 py-0.5 text-[10px] rounded-full bg-amber-100 text-amber-800 font-bold">
+              ТОП-50
+            </span>
           </button>
         </div>
 
-        {/* Tab Content */}
+        {/* Mode Filter & Player Name Bar */}
+        <div className="px-4 sm:px-5 py-2.5 bg-white border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {[
+              { id: 'all', label: 'Все режимы' },
+              { id: 'speed_text', label: 'Скорость текста' },
+              { id: 'word_goal', label: 'Марафон слов' },
+              { id: 'letter_sprint', label: 'Буквенный спринт' }
+            ].map(tab => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setFilterMode(tab.id)}
+                className={`px-3 py-1 rounded-xl text-xs font-bold transition ${
+                  filterMode === tab.id
+                    ? 'bg-slate-800 text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {onChangePlayerName && (
+              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1">
+                <Edit3 className="w-3.5 h-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={playerName}
+                  onChange={(e) => onChangePlayerName(e.target.value)}
+                  placeholder="Твой ник в Топ-50..."
+                  maxLength={24}
+                  className="bg-transparent text-xs font-bold text-slate-700 placeholder:text-slate-400 focus:outline-none w-28 sm:w-36"
+                />
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={loadScores}
+              className="p-1.5 text-slate-500 hover:text-blue-600 rounded-xl hover:bg-blue-50 transition flex items-center gap-1 text-xs font-bold"
+              title="Обновить Топ-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-blue-600' : ''}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* Body Content */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5">
-          {activeTab === 'leaderboard' ? (
-            <div className="flex flex-col gap-3">
-              {/* Cloud Sync Status Banner */}
-              <div className="bg-indigo-50/70 border border-indigo-100 rounded-2xl p-3 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Cloud className="w-4 h-4 text-indigo-500 flex-shrink-0" />
-                  <span className="text-xs text-indigo-900 font-medium">
-                    {user
-                      ? `Синхронизировано с аккаунтом: ${user.displayName || user.email}`
-                      : 'Войди через Google, чтобы твои рекорды были видны на всех устройствах!'}
-                  </span>
+          {activeTab === 'personal' ? (
+            <div className="flex flex-col gap-4">
+              {/* Self-Competition Hero Banner */}
+              <div className="bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 rounded-2xl p-4 text-white shadow-md">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-1.5 text-emerald-100 text-xs font-bold uppercase tracking-wider">
+                      <Flame className="w-4 h-4 text-amber-300 fill-amber-300" />
+                      Твой личный вызов самому себе • Серия: {streakDays} дн.
+                    </div>
+                    <h3 className="text-lg font-black mt-0.5">
+                      {personalStats.bestWpm > 0
+                        ? `Твой рекорд: ${personalStats.bestWpm} слов/мин! Попробуй побить его сегодня!`
+                        : 'Пройди любой режим до конца и нажми «Сохранить рекорд»!'}
+                    </h3>
+                    <p className="text-xs text-emerald-100 mt-0.5">
+                      Всего напечатано слов с котиком: <b>{wordsTypedCount}</b>
+                    </p>
+                  </div>
+                  <div className="text-4xl select-none">🚀</div>
                 </div>
-                {!user && (
-                  <button
-                    onClick={onLogin}
-                    className="px-3 py-1 bg-white hover:bg-indigo-100 text-indigo-700 font-bold text-xs rounded-xl border border-indigo-200 shadow-sm transition whitespace-nowrap"
-                  >
-                    Войти
-                  </button>
-                )}
+
+                {/* 4 Personal Stat Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+                  <div className="bg-white/15 backdrop-blur-sm rounded-xl p-2.5 border border-white/20">
+                    <div className="text-[10px] text-emerald-100 font-bold uppercase">Лучшая скорость</div>
+                    <div className="text-xl font-black font-mono mt-0.5">
+                      {personalStats.bestWpm} <span className="text-xs font-normal">WPM</span>
+                    </div>
+                  </div>
+                  <div className="bg-white/15 backdrop-blur-sm rounded-xl p-2.5 border border-white/20">
+                    <div className="text-[10px] text-emerald-100 font-bold uppercase">Средняя скорость</div>
+                    <div className="text-xl font-black font-mono mt-0.5">
+                      {personalStats.avgWpm} <span className="text-xs font-normal">WPM</span>
+                    </div>
+                  </div>
+                  <div className="bg-white/15 backdrop-blur-sm rounded-xl p-2.5 border border-white/20">
+                    <div className="text-[10px] text-emerald-100 font-bold uppercase">Лучшая точность</div>
+                    <div className="text-xl font-black font-mono mt-0.5">
+                      {personalStats.bestAccuracy}%
+                    </div>
+                  </div>
+                  <div className="bg-white/15 backdrop-blur-sm rounded-xl p-2.5 border border-white/20">
+                    <div className="text-[10px] text-emerald-100 font-bold uppercase flex items-center gap-1">
+                      <TrendingUp className="w-3 h-3" /> Рост скорости
+                    </div>
+                    <div className="text-xl font-black font-mono mt-0.5">
+                      {personalStats.improvementDelta >= 0
+                        ? `+${personalStats.improvementDelta}`
+                        : personalStats.improvementDelta}{' '}
+                      <span className="text-xs font-normal">WPM</span>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {/* Mode Filter Pills */}
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-[11px] font-bold text-slate-400 uppercase mr-1">
-                  Режим:
-                </span>
-                {[
-                  { id: 'all', label: 'Все' },
-                  { id: 'speed_text', label: 'Скорость текста' },
-                  { id: 'word_goal', label: 'Марафон 50 слов' },
-                  { id: 'letter_sprint', label: 'Буквенный спринт' }
-                ].map(item => (
-                  <button
-                    key={item.id}
-                    onClick={() => setSelectedModeFilter(item.id)}
-                    className={`px-2.5 py-1 rounded-xl text-xs font-bold transition border ${
-                      selectedModeFilter === item.id
-                        ? 'bg-indigo-600 text-white border-indigo-700 shadow-sm'
-                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-                    }`}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Leaderboard Table */}
-              {isLoading ? (
-                <div className="flex flex-col items-center justify-center py-12 text-slate-400 gap-2">
-                  <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-                  <span className="text-xs">Загрузка рекордов...</span>
-                </div>
-              ) : allRecords.length === 0 ? (
-                <div className="text-center py-10 text-slate-400">
-                  <span className="text-4xl block mb-2">🐾</span>
-                  <p className="text-sm font-semibold text-slate-600">Здесь пока нет рекордов!</p>
-                  <p className="text-xs text-slate-400 mt-1">Пройди любой режим печати и сохрани свой лучший результат!</p>
+              {/* Personal Records List */}
+              {personalRecords.length === 0 ? (
+                <div className="text-center py-10 bg-slate-50 rounded-2xl border border-dashed border-slate-200 flex flex-col items-center gap-2">
+                  <Award className="w-12 h-12 text-slate-300" />
+                  <p className="text-slate-600 font-bold text-sm">
+                    У тебя пока нет сохранённых личных рекордов в этом режиме.
+                  </p>
+                  <p className="text-xs text-slate-400 max-w-md">
+                    Заверши рассказ в «Скорости текста», «Марафоне слов» или «Буквенном спринте» и нажми кнопку «Сохранить рекорд»!
+                  </p>
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
-                  {allRecords.map((rec, index) => {
-                    const isTop1 = index === 0;
-                    const isTop2 = index === 1;
-                    const isTop3 = index === 2;
-
+                  {personalRecords.map((rec, index) => {
+                    const isPersonalBest = index === 0;
                     return (
                       <div
-                        key={rec.id || index}
+                        key={rec.id}
                         className={`p-3 rounded-2xl border flex items-center justify-between gap-3 transition ${
-                          isTop1
-                            ? 'bg-amber-50/80 border-amber-200 shadow-sm'
-                            : isTop2
-                            ? 'bg-slate-50 border-slate-200'
-                            : isTop3
-                            ? 'bg-amber-50/40 border-amber-100'
-                            : 'bg-white border-slate-100 hover:bg-slate-50'
+                          isPersonalBest
+                            ? 'bg-emerald-50/80 border-emerald-300 shadow-sm'
+                            : 'bg-white border-slate-200 hover:bg-slate-50'
                         }`}
                       >
-                        <div className="flex items-center gap-3">
-                          {/* Rank badge */}
-                          <div className="w-8 h-8 rounded-full flex items-center justify-center font-black text-sm">
-                            {isTop1 ? '🥇' : isTop2 ? '🥈' : isTop3 ? '🥉' : `#${index + 1}`}
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div
+                            className={`w-9 h-9 rounded-xl flex items-center justify-center font-black text-xs flex-shrink-0 ${
+                              isPersonalBest
+                                ? 'bg-emerald-500 text-white shadow-sm'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            {isPersonalBest ? '👑' : `#${index + 1}`}
                           </div>
-
-                          {/* Avatar / Name */}
-                          <div className="flex items-center gap-2">
-                            {rec.userPhoto ? (
-                              <img
-                                src={rec.userPhoto}
-                                alt={rec.userName}
-                                className="w-7 h-7 rounded-full border border-indigo-200"
-                              />
-                            ) : (
-                              <div className="w-7 h-7 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-xs">
-                                {rec.userName ? rec.userName[0].toUpperCase() : 'К'}
-                              </div>
-                            )}
-
-                            <div>
-                              <div className="flex items-center gap-1.5">
-                                <span className="font-bold text-slate-800 text-xs sm:text-sm">
-                                  {rec.userName}
-                                </span>
-                                {getModeBadge(rec.mode)}
-                              </div>
-                              <span className="text-[10px] text-slate-400 block">
-                                {rec.details || 'Отличная печать'}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-slate-800 text-sm truncate">
+                                {rec.userName}
                               </span>
+                              {isPersonalBest && (
+                                <span className="text-[10px] font-black bg-emerald-500 text-white px-2 py-0.5 rounded-full">
+                                  ЛИЧНЫЙ РЕКОРД!
+                                </span>
+                              )}
+                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">
+                                {getModeName(rec.mode)}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-400 truncate mt-0.5">
+                              {rec.details}
                             </div>
                           </div>
                         </div>
 
-                        {/* Numbers */}
-                        <div className="flex items-center gap-4 text-right">
-                          <div>
-                            <span className="text-base sm:text-lg font-black font-mono text-indigo-600 block leading-tight">
-                              {rec.wpm} <span className="text-[10px] font-semibold text-slate-400">WPM</span>
-                            </span>
-                            <span className="text-[10px] text-emerald-600 font-semibold block">
-                              {rec.accuracy}% точность
-                            </span>
+                        <div className="flex items-center gap-3 sm:gap-4 flex-shrink-0">
+                          <div className="text-right">
+                            <div className="text-sm sm:text-base font-black text-emerald-600 font-mono flex items-center gap-1 justify-end">
+                              <Zap className="w-3.5 h-3.5 fill-emerald-500" />
+                              {rec.wpm} <span className="text-[10px] font-normal text-slate-400">WPM</span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-mono">
+                              {rec.cpm} зн/мин
+                            </div>
+                          </div>
+
+                          <div className="text-right hidden sm:block">
+                            <div className="text-xs font-bold text-slate-700 font-mono flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                              {rec.accuracy}%
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+                              <Clock className="w-3 h-3" />
+                              {rec.timeSeconds}с
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -273,74 +394,145 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
               )}
             </div>
           ) : (
-            /* Daily Achievements Tab */
-            <div className="flex flex-col gap-3">
-              <div className="bg-orange-50 border border-orange-100 rounded-2xl p-3 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Flame className="w-5 h-5 text-orange-500" />
-                  <div>
-                    <span className="text-xs font-bold text-orange-900 block">
-                      Ударный режим: {streakDays} {streakDays === 1 ? 'день' : 'дня'} подряд!
-                    </span>
-                    <span className="text-[11px] text-orange-700">
-                      Заходи каждый день тренировать пальчики и получай супер-бонусы!
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-2 mt-1">
-                {achievements.map(ach => (
-                  <div
-                    key={ach.id}
-                    className={`p-3 rounded-2xl border flex items-center justify-between gap-3 ${
-                      ach.isUnlocked
-                        ? 'bg-emerald-50/70 border-emerald-200'
-                        : 'bg-white border-slate-200 opacity-80'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="text-2xl">{ach.icon}</div>
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-bold text-slate-800 text-xs sm:text-sm">
-                            {ach.title}
+            /* Tab 2: Global Top-50 Leaderboard */
+            <div className="flex flex-col gap-4">
+              {/* Top-3 Podium Cards if available */}
+              {globalTop50.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {globalTop50.slice(0, 3).map((rec, idx) => {
+                    const medals = ['🥇 1 МЕСТО', '🥈 2 МЕСТО', '🥉 3 МЕСТО'];
+                    const cardStyles = [
+                      'bg-gradient-to-br from-amber-50 via-yellow-50 to-orange-50 border-amber-300 ring-2 ring-amber-200/60',
+                      'bg-gradient-to-br from-slate-50 to-slate-100 border-slate-300',
+                      'bg-gradient-to-br from-orange-50/70 to-amber-50/50 border-orange-200'
+                    ];
+                    return (
+                      <div
+                        key={rec.id}
+                        className={`p-3.5 rounded-2xl border shadow-sm flex flex-col justify-between ${cardStyles[idx]}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-black text-amber-900">
+                            {medals[idx]}
                           </span>
-                          <span className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.2 rounded font-bold">
-                            +{ach.xpReward} XP
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/80 text-slate-600 border border-slate-200/60">
+                            {getModeName(rec.mode)}
                           </span>
                         </div>
-                        <p className="text-[11px] text-slate-500">{ach.description}</p>
+                        <div className="font-black text-slate-800 text-base truncate mt-1.5">
+                          {rec.userName}
+                        </div>
+                        <div className="flex items-baseline justify-between mt-2">
+                          <span className="text-xl font-black text-blue-600 font-mono">
+                            {rec.wpm} <span className="text-xs font-bold text-slate-400">WPM</span>
+                          </span>
+                          <span className="text-xs font-bold text-emerald-600 font-mono">
+                            {rec.accuracy}% • {rec.timeSeconds}с
+                          </span>
+                        </div>
                       </div>
-                    </div>
+                    );
+                  })}
+                </div>
+              )}
 
-                    <div>
-                      {ach.isClaimed ? (
-                        <div className="flex items-center gap-1 text-slate-500 font-bold text-xs bg-slate-100 px-2.5 py-1 rounded-xl">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                          <span>Забрано</span>
+              {/* Global Top-50 List */}
+              {globalTop50.length === 0 ? (
+                <div className="text-center py-12 flex flex-col items-center gap-2 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                  <Trophy className="w-12 h-12 text-slate-300" />
+                  <p className="text-slate-600 font-bold text-sm">
+                    В мировом Топ-50 пока пусто. Стань первым чемпионом!
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    Любой игрок, нажавший «Сохранить рекорд», попадает в этот рейтинг!
+                  </p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {globalTop50.map((rec, index) => {
+                    const isTop3 = index < 3;
+                    const rankColors = [
+                      'bg-amber-400 text-slate-950 shadow-amber-200',
+                      'bg-slate-300 text-slate-900 shadow-slate-200',
+                      'bg-amber-600 text-white shadow-amber-100'
+                    ];
+
+                    return (
+                      <div
+                        key={rec.id}
+                        className={`p-3 rounded-2xl border flex items-center justify-between gap-3 transition ${
+                          isTop3
+                            ? 'bg-amber-50/40 border-amber-200 shadow-sm'
+                            : 'bg-white border-slate-100 hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div
+                            className={`w-8 h-8 rounded-xl flex items-center justify-center font-black text-xs flex-shrink-0 ${
+                              isTop3
+                                ? `${rankColors[index]} shadow-sm`
+                                : 'bg-slate-100 text-slate-500'
+                            }`}
+                          >
+                            {isTop3 ? <Medal className="w-4 h-4" /> : index + 1}
+                          </div>
+
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-slate-800 text-sm truncate">
+                                {rec.userName}
+                              </span>
+                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-blue-50 text-blue-600">
+                                {getModeName(rec.mode)}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-400 truncate">
+                              {rec.details}
+                            </div>
+                          </div>
                         </div>
-                      ) : ach.isUnlocked ? (
-                        <button
-                          type="button"
-                          onClick={() => onClaimAchievement(ach.id, ach.xpReward)}
-                          className="flex items-center gap-1 text-white font-bold text-xs bg-emerald-500 hover:bg-emerald-600 px-2.5 py-1 rounded-xl shadow transition animate-pulse"
-                          title="Забрать опыт"
-                        >
-                          <Sparkles className="w-3 h-3 text-amber-300" />
-                          <span>Забрать +{ach.xpReward} XP</span>
-                        </button>
-                      ) : (
-                        <span className="text-xs text-slate-400 font-semibold bg-slate-100 px-2 py-1 rounded-xl">
-                          В процессе
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+
+                        <div className="flex items-center gap-3 sm:gap-4 flex-shrink-0">
+                          <div className="text-right">
+                            <div className="text-sm sm:text-base font-black text-blue-600 font-mono flex items-center gap-1 justify-end">
+                              <Zap className="w-3.5 h-3.5 fill-blue-500" />
+                              {rec.wpm} <span className="text-[10px] font-normal text-slate-400">WPM</span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-mono">
+                              {rec.cpm} зн/мин
+                            </div>
+                          </div>
+
+                          <div className="text-right hidden sm:block">
+                            <div className="text-xs font-bold text-emerald-600 font-mono flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              {rec.accuracy}%
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+                              <Clock className="w-3 h-3" />
+                              {rec.timeSeconds}с
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
+        </div>
+
+        {/* Footer */}
+        <div className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between px-5 text-xs text-slate-400">
+          <span>Каждый, кто нажмёт «Сохранить рекорд», попадает в мировой Топ-50!</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-xl transition"
+          >
+            Закрыть
+          </button>
         </div>
       </div>
     </div>

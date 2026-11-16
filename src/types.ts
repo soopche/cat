@@ -11,7 +11,8 @@ export type CatLevel =
   | 'teen' 
   | 'adult' 
   | 'smart' 
-  | 'master';
+  | 'master'
+  | 'cosmic';
 
 export type CatAction = 
   | 'idle' 
@@ -46,6 +47,39 @@ export interface AchievementItem {
   xpReward: number;
   isUnlocked: boolean;
   isClaimed?: boolean;
+  currentProgress?: number;
+  targetProgress?: number;
+  category?: 'daily' | 'longterm';
+}
+
+export interface QuestProgressCounters {
+  // Daily counters (reset each day YYYY-MM-DD)
+  dailyDate: string;
+  dailyWords: number;
+  dailyFeedings: number;
+  dailyCareActions: number;
+  dailyRiddlesMathSport: number;
+  dailyMarathons: number;
+  dailySpeedTexts: number;
+  dailySprintLetters: number;
+  dailyChatMessages: number;
+  // Long-term cumulative counters
+  totalWords: number;
+  totalMarathons: number;
+  totalSpeedTexts: number;
+  totalSprintLetters: number;
+  totalRiddles: number;
+  totalMath: number;
+  totalSport: number;
+  totalFeedings: number;
+  totalWashings: number;
+  totalSleeps: number;
+  totalPlays: number;
+  totalChats: number;
+  maxWpm: number;
+  highAccuracyTexts: number;
+  recordsSaved: number;
+  learnedAlphabetLetters?: string;
 }
 
 export interface TypingResult {

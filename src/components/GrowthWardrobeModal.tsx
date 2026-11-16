@@ -32,11 +32,12 @@ interface StageInfo {
 
 const STAGES: StageInfo[] = [
   { id: 'baby', name: 'Малыш', icon: '👶', accessory: 'Нежный слюнявчик', difficultyHint: 'Слова из 3 букв', requiredXp: 0 },
-  { id: 'kitten', name: 'Котёнок-непоседа', icon: '🐱', accessory: 'Игривый бантик', difficultyHint: 'Слова 4–5 букв', requiredXp: 300 },
-  { id: 'teen', name: 'Подросток-стиляга', icon: '😼', accessory: 'Модный чубчик', difficultyHint: 'Слова 5–7 букв', requiredXp: 900 },
-  { id: 'adult', name: 'Кот-путешественник', icon: '🦁', accessory: 'Ошейник с бубенчиком', difficultyHint: 'Слова 7–10 букв', requiredXp: 2000 },
-  { id: 'smart', name: 'Учёный профессор', icon: '🎩', accessory: 'Круглые очки и бабочка', difficultyHint: 'Длинные слова и фразы', requiredXp: 3800 },
+  { id: 'kitten', name: 'Котёнок-непоседа', icon: '🐱', accessory: 'Игривый бантик', difficultyHint: 'Слова 4–5 букв', requiredXp: 250 },
+  { id: 'teen', name: 'Подросток-стиляга', icon: '😼', accessory: 'Модный чубчик', difficultyHint: 'Слова 5–7 букв', requiredXp: 700 },
+  { id: 'adult', name: 'Кот-путешественник', icon: '🦁', accessory: 'Ошейник с бубенчиком', difficultyHint: 'Слова 7–10 букв', requiredXp: 1500 },
+  { id: 'smart', name: 'Учёный профессор', icon: '🎩', accessory: 'Круглые очки и бабочка', difficultyHint: 'Длинные слова и фразы', requiredXp: 3000 },
   { id: 'master', name: 'Великий Магистр', icon: '👑', accessory: 'Звёздный колпак волшебника', difficultyHint: 'Фразы из 2 слов', requiredXp: 6000 },
+  { id: 'cosmic', name: 'Космический Император', icon: '🌌', accessory: 'Корона галактики и нимб', difficultyHint: 'Фразы из 2 слов', requiredXp: 12000 },
 ];
 
 export const GrowthWardrobeModal: React.FC<GrowthWardrobeModalProps> = ({
@@ -56,7 +57,7 @@ export const GrowthWardrobeModal: React.FC<GrowthWardrobeModalProps> = ({
   const currentStageIndex = STAGES.findIndex(s => s.id === level);
   const nextStage = STAGES[currentStageIndex + 1];
   const currentThreshold = STAGES[currentStageIndex]?.requiredXp || 0;
-  const nextThreshold = nextStage?.requiredXp || 6000;
+  const nextThreshold = nextStage?.requiredXp || 12000;
   const xpNeeded = Math.max(0, nextThreshold - xp);
   const progressRatio = nextStage 
     ? Math.min(100, Math.round(((xp - currentThreshold) / (nextThreshold - currentThreshold)) * 100))
@@ -135,7 +136,7 @@ export const GrowthWardrobeModal: React.FC<GrowthWardrobeModalProps> = ({
             <div className="flex items-center justify-between mb-2">
               <h4 className="text-sm font-black text-slate-800 flex items-center gap-1.5">
                 <span>Выбор облика питомца:</span>
-                {hasUnlockedAllAges && (
+                {xp >= 12000 && hasUnlockedAllAges && (
                   <span className="text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
                     <Crown className="w-3 h-3 text-amber-600" />
                     Все облики разблокированы!
@@ -147,7 +148,7 @@ export const GrowthWardrobeModal: React.FC<GrowthWardrobeModalProps> = ({
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
               {STAGES.map((stage, idx) => {
                 const isCurrentLook = displayLevel === stage.id;
-                const isUnlocked = hasUnlockedAllAges || idx <= currentStageIndex;
+                const isUnlocked = xp >= stage.requiredXp || idx <= currentStageIndex;
 
                 return (
                   <button

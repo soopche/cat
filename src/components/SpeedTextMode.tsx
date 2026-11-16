@@ -8,8 +8,7 @@ import {
   Trophy, 
   CheckCircle, 
   Play, 
-  FileText,
-  Volume2
+  FileText
 } from 'lucide-react';
 import { PRESET_STORIES } from '../data/words';
 import { VirtualKeyboard } from './VirtualKeyboard';
@@ -17,14 +16,15 @@ import {
   playCorrectBeep, 
   playErrorTone, 
   playSuccessFanfare, 
-  launchConfetti, 
-  speakRussianText 
+  launchConfetti
 } from '../utils/soundAndEffects';
 import { ScoreRecord } from '../firebase';
 import { User } from 'firebase/auth';
 
 interface SpeedTextModeProps {
   user: User | null;
+  playerName?: string;
+  onChangePlayerName?: (name: string) => void;
   soundEnabled: boolean;
   onSaveRecord: (rec: ScoreRecord) => void;
   onAddXp: (amount: number) => void;
@@ -34,10 +34,26 @@ interface SpeedTextModeProps {
   onToggleMobileMode: () => void;
   isRewardMode?: boolean;
   onWordCompleted?: (wordsCount?: number, charLength?: number) => void;
+  onSpeedTextCompleted?: (wpm: number, accuracy: number) => void;
+}
+
+// Sanitize custom or preset text so uncommon typographic symbols don't trap the user on tablet/desktop keyboards
+export function sanitizeTypingText(raw: string): string {
+  return raw
+    .replace(/\r\n/g, ' ')
+    .replace(/\n/g, ' ')
+    .replace(/[—–−]/g, '-')
+    .replace(/[«»„“”"]/g, '"')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 1500);
 }
 
 export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
   user,
+  playerName = '',
+  onChangePlayerName,
   soundEnabled,
   onSaveRecord,
   onAddXp,
@@ -45,11 +61,11 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
   onSetKbScale,
   isMobileMode,
   onToggleMobileMode,
-  isRewardMode,
-  onWordCompleted
+  onWordCompleted,
+  onSpeedTextCompleted
 }) => {
   const [selectedStoryId, setSelectedStoryId] = useState<string>(PRESET_STORIES[0].id);
-  const [targetText, setTargetText] = useState<string>(PRESET_STORIES[0].text);
+  const [targetText, setTargetText] = useState<string>(() => sanitizeTypingText(PRESET_STORIES[0].text));
   const [typedText, setTypedText] = useState<string>('');
   const [errorsCount, setErrorsCount] = useState<number>(0);
   const [startTime, setStartTime] = useState<number | null>(null);
@@ -64,13 +80,23 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textContainerRef = useRef<HTMLDivElement>(null);
+  const tabletInputRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const typedTextRef = useRef<string>('');
+  const errorsCountRef = useRef<number>(0);
+  const lastKeydownTimeRef = useRef<number>(0);
+
+  typedTextRef.current = typedText;
+  errorsCountRef.current = errorsCount;
 
   // Reset or switch text
   const resetTest = useCallback((newText?: string) => {
-    const textToUse = newText !== undefined ? newText : targetText;
+    const rawToUse = newText !== undefined ? newText : targetText;
+    const textToUse = sanitizeTypingText(rawToUse) || sanitizeTypingText(PRESET_STORIES[0].text);
     setTypedText('');
+    typedTextRef.current = '';
     setErrorsCount(0);
+    errorsCountRef.current = 0;
     setStartTime(null);
     setElapsedSeconds(0);
     setIsFinished(false);
@@ -79,46 +105,49 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
     setAccuracy(100);
     setHasSaved(false);
     if (timerRef.current) clearInterval(timerRef.current);
-    if (newText !== undefined) setTargetText(textToUse);
+    setTargetText(textToUse);
   }, [targetText]);
 
-  // Handle timer
+  // Handle timer without resetting interval on every typed letter
   useEffect(() => {
     if (startTime && !isFinished) {
-      timerRef.current = setInterval(() => {
+      const updateLiveMetrics = () => {
         const seconds = Math.max(1, Math.floor((Date.now() - startTime) / 1000));
         setElapsedSeconds(seconds);
 
-        // live stats
-        const chars = typedText.length;
-        const words = typedText.trim().split(/\s+/).filter(Boolean).length;
+        const chars = typedTextRef.current.length;
+        const words = typedTextRef.current.trim().split(/\s+/).filter(Boolean).length;
         const currentCpm = Math.round((chars / seconds) * 60);
         const currentWpm = Math.round((words / seconds) * 60);
         setCpm(currentCpm);
         setWpm(currentWpm);
 
-        const totalAttempts = chars + errorsCount;
+        const totalAttempts = chars + errorsCountRef.current;
         const acc = totalAttempts > 0 ? Math.round((chars / totalAttempts) * 100) : 100;
         setAccuracy(acc);
-      }, 500);
+      };
+
+      updateLiveMetrics();
+      timerRef.current = setInterval(updateLiveMetrics, 400);
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [startTime, isFinished, typedText, errorsCount]);
+  }, [startTime, isFinished]);
 
   // Complete handling
-  const completeTyping = useCallback(() => {
+  const completeTyping = useCallback((finalErrors: number) => {
     setIsFinished(true);
     if (timerRef.current) clearInterval(timerRef.current);
 
-    const duration = startTime ? Math.max(1, (Date.now() - startTime) / 1000) : 1;
+    const duration = startTime ? Math.max(1, Math.round((Date.now() - startTime) / 1000)) : 1;
     const words = targetText.trim().split(/\s+/).length;
     const finalWpm = Math.round((words / duration) * 60);
     const finalCpm = Math.round((targetText.length / duration) * 60);
-    const totalAttempts = targetText.length + errorsCount;
+    const totalAttempts = targetText.length + finalErrors;
     const finalAcc = totalAttempts > 0 ? Math.round((targetText.length / totalAttempts) * 100) : 100;
 
+    setElapsedSeconds(duration);
     setWpm(finalWpm);
     setCpm(finalCpm);
     setAccuracy(finalAcc);
@@ -126,32 +155,48 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
     if (soundEnabled) playSuccessFanfare();
     launchConfetti();
 
-    // Reward XP based on text length and speed
     const xpEarned = Math.round(words * 2 + finalWpm * 0.5);
     onAddXp(xpEarned);
-  }, [startTime, targetText, errorsCount, soundEnabled, onAddXp]);
+    onSpeedTextCompleted?.(finalWpm, finalAcc);
+  }, [startTime, targetText, soundEnabled, onAddXp, onSpeedTextCompleted]);
 
   // Handle key press
   const handleCharInput = useCallback((char: string) => {
-    if (isFinished) return;
+    if (isFinished || !targetText) return;
 
+    const now = Date.now();
+    const effectiveStart = startTime ?? now;
     if (!startTime) {
-      setStartTime(Date.now());
+      setStartTime(now);
     }
 
-    const expectedChar = targetText[typedText.length];
+    const currentTyped = typedTextRef.current;
+    const expectedChar = targetText[currentTyped.length];
+    if (expectedChar === undefined) return;
 
-    // Standardize comparison (treat spaces and non-breaking spaces alike)
-    const match = char === expectedChar || (expectedChar === ' ' && char === ' ');
+    // Allow matching exact char, or 'е'/'ё' equivalence on tablet keyboards that lack dedicated 'ё'
+    const normalizedInput = char === '\u00A0' ? ' ' : char;
+    const normalizedExpected = expectedChar === '\u00A0' ? ' ' : expectedChar;
+    const isYoEquivalent =
+      (normalizedExpected === 'ё' && normalizedInput === 'е') ||
+      (normalizedExpected === 'Ё' && normalizedInput === 'Е');
+
+    const match = normalizedInput === normalizedExpected || isYoEquivalent;
 
     if (match) {
       if (soundEnabled) playCorrectBeep();
-      const nextTyped = typedText + expectedChar;
+      const nextTyped = currentTyped + expectedChar;
+      typedTextRef.current = nextTyped;
       setTypedText(nextTyped);
 
-      // When child completes a word via space or reaches end of text
+      // Update live stats immediately so WPM/CPM feel responsive on every keystroke
+      const secs = Math.max(1, (now - effectiveStart) / 1000);
+      const wordsNow = nextTyped.trim().split(/\s+/).filter(Boolean).length;
+      setCpm(Math.round((nextTyped.length / secs) * 60));
+      setWpm(Math.round((wordsNow / secs) * 60));
+
       if (expectedChar === ' ') {
-        const lastWord = targetText.slice(0, typedText.length).trim().split(/\s+/).pop() || '';
+        const lastWord = targetText.slice(0, currentTyped.length).trim().split(/\s+/).pop() || '';
         if (lastWord) {
           onWordCompleted?.(1, lastWord.length);
         }
@@ -160,36 +205,69 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
         if (lastWord) {
           onWordCompleted?.(1, lastWord.length);
         }
-        completeTyping();
+        completeTyping(errorsCountRef.current);
       }
     } else {
       if (soundEnabled) playErrorTone();
-      setErrorsCount(prev => prev + 1);
+      const nextErr = errorsCountRef.current + 1;
+      errorsCountRef.current = nextErr;
+      setErrorsCount(nextErr);
+      const totalAttempts = currentTyped.length + nextErr;
+      if (totalAttempts > 0) {
+        setAccuracy(Math.round((currentTyped.length / totalAttempts) * 100));
+      }
     }
-  }, [isFinished, startTime, targetText, typedText, soundEnabled, completeTyping, onWordCompleted]);
+  }, [isFinished, startTime, targetText, soundEnabled, completeTyping, onWordCompleted]);
 
   // Physical keyboard listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (showCustomModal) return;
+      const activeTag = document.activeElement?.tagName;
+      if (activeTag === 'TEXTAREA' || (activeTag === 'INPUT' && document.activeElement !== tabletInputRef.current)) {
+        return;
+      }
 
-      // Escape to restart
       if (e.key === 'Escape') {
         resetTest();
         return;
       }
 
-      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        handleCharInput(e.key);
-      } else if (e.key === ' ') {
+      // Prevent Enter from clicking any previously focused button
+      if (e.key === 'Enter') {
         e.preventDefault();
+        return;
+      }
+
+      if (e.key === ' ') {
+        e.preventDefault();
+        lastKeydownTimeRef.current = Date.now();
         handleCharInput(' ');
+        return;
+      }
+
+      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        lastKeydownTimeRef.current = Date.now();
+        handleCharInput(e.key);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleCharInput, resetTest, showCustomModal]);
+
+  // Tablet / Android Chrome IME fallback input handler (when keydown sends 'Unidentified' / keyCode 229)
+  const handleTabletInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    e.target.value = '';
+    if (!val || showCustomModal) return;
+    // Skip if physical keydown already processed this keystroke within the last 25ms
+    if (Date.now() - lastKeydownTimeRef.current < 25) return;
+    const lastChar = val[val.length - 1];
+    if (lastChar) {
+      handleCharInput(lastChar);
+    }
+  };
 
   // Load custom story file
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -199,17 +277,22 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
     reader.onload = (event) => {
       const content = event.target?.result as string;
       if (content && content.trim().length > 0) {
-        // clean up excessive spaces
-        const sanitized = content.replace(/\r\n/g, ' ').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-        resetTest(sanitized);
-        setSelectedStoryId('custom');
+        const sanitized = sanitizeTypingText(content);
+        if (sanitized) {
+          resetTest(sanitized);
+          setSelectedStoryId('custom');
+          setShowCustomModal(false);
+          setCustomTextDraft('');
+        }
       }
     };
     reader.readAsText(file);
+    e.target.value = '';
   };
 
-  // AI or Generator simple stories
-  const handleGenerateStory = () => {
+  // Simple child-friendly stories generator
+  const handleGenerateStory = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.blur();
     const themes = [
       {
         title: "Солнечный зайчик",
@@ -231,17 +314,18 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
 
   const handleSaveToLeaderboard = () => {
     if (hasSaved) return;
+    const effectiveName = (playerName && playerName.trim()) || user?.displayName || 'Юный мастер печати';
     const record: ScoreRecord = {
       id: 'speed_' + Date.now(),
       userId: user ? user.uid : 'guest_' + Math.random().toString(36).substring(2, 8),
-      userName: user?.displayName || 'Юный мастер печати',
+      userName: effectiveName,
       userPhoto: user?.photoURL || undefined,
       mode: 'speed_text',
       wpm,
       cpm,
       accuracy,
       wordsCount: targetText.trim().split(/\s+/).length,
-      timeSeconds: elapsedSeconds,
+      timeSeconds: Math.max(1, elapsedSeconds),
       details: `Текст: ${targetText.slice(0, 30)}...`,
       createdAt: new Date().toISOString()
     };
@@ -254,13 +338,28 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
     : undefined;
 
   return (
-    <div className="w-full max-w-5xl flex flex-col items-center gap-3">
+    <div translate="no" className="notranslate w-full max-w-5xl flex flex-col items-center gap-3">
       <input
         type="file"
         ref={fileInputRef}
         onChange={handleFileUpload}
         accept=".txt"
         className="hidden"
+      />
+
+      {/* Hidden IME fallback input for Android tablets */}
+      <input
+        ref={tabletInputRef}
+        type="text"
+        value=""
+        onChange={handleTabletInputChange}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        aria-hidden="true"
+        tabIndex={-1}
+        className="sr-only pointer-events-none opacity-0 w-0 h-0 absolute"
       />
 
       {/* Mode Bar & Story Selector */}
@@ -274,9 +373,14 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
           {PRESET_STORIES.map(story => (
             <button
               key={story.id}
-              onClick={() => {
+              type="button"
+              onClick={(e) => {
+                e.currentTarget.blur();
                 setSelectedStoryId(story.id);
                 resetTest(story.text);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
               }}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 border ${
                 selectedStoryId === story.id
@@ -291,7 +395,11 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
 
         <div className="flex items-center gap-1.5">
           <button
+            type="button"
             onClick={handleGenerateStory}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+            }}
             className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 transition shadow-sm"
             title="Сгенерировать новый простой детский рассказ"
           >
@@ -300,7 +408,14 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
           </button>
 
           <button
-            onClick={() => setShowCustomModal(true)}
+            type="button"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              setShowCustomModal(true);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+            }}
             className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition shadow-sm"
             title="Ввести или загрузить свой собственный текст"
           >
@@ -309,7 +424,14 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
           </button>
 
           <button
-            onClick={() => resetTest()}
+            type="button"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              resetTest();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+            }}
             className="p-1.5 rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200 transition"
             title="Начать сначала (Esc)"
           >
@@ -373,18 +495,26 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
       {/* Text Presentation Box */}
       <div 
         ref={textContainerRef}
-        className="w-full bg-white rounded-3xl p-5 sm:p-7 shadow-md border-2 border-slate-200/90 min-h-[170px] relative font-sans text-lg sm:text-xl leading-relaxed select-none overflow-y-auto max-h-[300px]"
+        translate="no"
+        onClick={() => {
+          if (isMobileMode) {
+            tabletInputRef.current?.focus({ preventScroll: true });
+          }
+        }}
+        className="notranslate w-full bg-white rounded-3xl p-5 sm:p-7 shadow-md border-2 border-slate-200/90 min-h-[170px] relative font-sans text-lg sm:text-xl leading-relaxed select-none overflow-y-auto max-h-[300px]"
       >
         {!startTime && typedText.length === 0 && (
-          <div className="absolute top-2 right-3 flex items-center gap-1.5 text-xs text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full font-bold animate-pulse">
-            <Zap className="w-3.5 h-3.5" />
-            Начни печатать любой символ, чтобы запустить таймер!
+          <div className="mb-2 flex items-center justify-end">
+            <div className="inline-flex items-center gap-1.5 text-xs text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full font-bold animate-pulse">
+              <Zap className="w-3.5 h-3.5" />
+              Начни печатать любой символ, чтобы запустить таймер!
+            </div>
           </div>
         )}
 
-        <div className="tracking-wide">
+        <div translate="no" className="notranslate tracking-wide whitespace-pre-wrap break-words">
           {targetText.split('').map((char, idx) => {
-            let className = "transition-colors duration-150 ";
+            let className = "notranslate transition-colors duration-150 ";
             if (idx < typedText.length) {
               className += "text-emerald-600 font-semibold bg-emerald-50/60 rounded ";
             } else if (idx === typedText.length) {
@@ -394,7 +524,7 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
             }
 
             return (
-              <span key={idx} className={className}>
+              <span key={idx} translate="no" className={className}>
                 {char}
               </span>
             );
@@ -416,8 +546,20 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {!user && onChangePlayerName && !hasSaved && (
+              <input
+                type="text"
+                value={playerName}
+                onChange={(e) => onChangePlayerName(e.target.value)}
+                placeholder="Твоё имя для рекорда..."
+                maxLength={24}
+                className="px-3 py-2 rounded-xl bg-white/95 text-slate-800 text-xs font-bold placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-300"
+              />
+            )}
+
             <button
+              type="button"
               onClick={handleSaveToLeaderboard}
               disabled={hasSaved}
               className={`px-4 py-2.5 rounded-2xl font-bold flex items-center gap-2 shadow-lg transition ${
@@ -427,11 +569,15 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
               }`}
             >
               <Trophy className="w-5 h-5 text-amber-500" />
-              <span>{hasSaved ? 'Рекорд сохранён!' : 'Сохранить в рекорд'}</span>
+              <span>{hasSaved ? 'Рекорд в Топ-50!' : 'Сохранить в рекорд'}</span>
             </button>
 
             <button
-              onClick={() => resetTest()}
+              type="button"
+              onClick={(e) => {
+                e.currentTarget.blur();
+                resetTest();
+              }}
               className="px-4 py-2.5 bg-emerald-800/60 hover:bg-emerald-800 text-white rounded-2xl font-bold transition flex items-center gap-1.5"
             >
               <RotateCcw className="w-4 h-4" />
@@ -475,6 +621,7 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
 
             <div className="flex justify-between items-center">
               <button
+                type="button"
                 onClick={() => fileInputRef.current?.click()}
                 className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition"
               >
@@ -484,19 +631,24 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
 
               <div className="flex gap-2">
                 <button
+                  type="button"
                   onClick={() => setShowCustomModal(false)}
                   className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-bold"
                 >
                   Отмена
                 </button>
                 <button
-                  onClick={() => {
+                  type="button"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
                     if (customTextDraft.trim().length > 0) {
-                      const sanitized = customTextDraft.replace(/\r\n/g, ' ').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-                      resetTest(sanitized);
-                      setSelectedStoryId('custom');
-                      setShowCustomModal(false);
-                      setCustomTextDraft('');
+                      const sanitized = sanitizeTypingText(customTextDraft);
+                      if (sanitized) {
+                        resetTest(sanitized);
+                        setSelectedStoryId('custom');
+                        setShowCustomModal(false);
+                        setCustomTextDraft('');
+                      }
                     }
                   }}
                   disabled={!customTextDraft.trim()}

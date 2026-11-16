@@ -119,7 +119,10 @@ export interface UserSyncProfile {
   photoURL?: string;
   xp: number;
   level: string;
+  displayLevel?: string;
+  hasUnlockedAllAges?: boolean;
   wordsTypedCount: number;
+  rewardSeconds?: number;
   stats?: {
     hunger: number;
     sleep: number;
@@ -127,7 +130,11 @@ export interface UserSyncProfile {
     happiness: number;
     intelligence: number;
   };
+  statsDate?: string;
   dailyAchievements?: string[];
+  claimedQuestIds?: string[];
+  unlockedQuestIds?: string[];
+  questCounters?: Record<string, number | string>;
   streakDays?: number;
   lastActiveDate?: string;
   updatedAt: string;
@@ -162,7 +169,7 @@ export async function loadUserProfile(uid: string): Promise<UserSyncProfile | nu
   }
 }
 
-// Save score record to Leaderboard
+// Save score record to Leaderboard (works for both logged-in users and guest players)
 export async function saveScoreRecord(record: ScoreRecord): Promise<void> {
   const path = `leaderboard/${record.id}`;
   try {

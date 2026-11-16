@@ -43,6 +43,7 @@ export const CatAvatar: React.FC<CatAvatarProps> = ({
   else if (stage === 'adult') defaultScale = 0.98;
   else if (stage === 'smart') defaultScale = 1.05;
   else if (stage === 'master') defaultScale = 1.12;
+  else if (stage === 'cosmic') defaultScale = 1.16;
 
   const finalScale = scaleOverride ?? defaultScale;
 
@@ -66,11 +67,28 @@ export const CatAvatar: React.FC<CatAvatarProps> = ({
             <stop offset="0%" stopColor="#7048E8" />
             <stop offset="100%" stopColor="#4C1D95" />
           </linearGradient>
+          <linearGradient id="cosmicCrownGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#FDE047" />
+            <stop offset="50%" stopColor="#F59E0B" />
+            <stop offset="100%" stopColor="#7C3AED" />
+          </linearGradient>
           <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
             <feGaussianBlur stdDeviation="3" result="blur" />
             <feComposite in="SourceGraphic" in2="blur" operator="over" />
           </filter>
         </defs>
+
+        {/* Cosmic Halo & Star Aura for 7th stage */}
+        {stage === 'cosmic' && (
+          <g>
+            <circle cx="105" cy="95" r="88" fill="none" stroke="#8B5CF6" strokeWidth="2.5" strokeDasharray="8 6" opacity="0.55" />
+            <circle cx="105" cy="95" r="78" fill="none" stroke="#FACC15" strokeWidth="1.5" opacity="0.45" />
+            <text x="18" y="15" fontSize="20">🌌</text>
+            <text x="182" y="20" fontSize="20">🪐</text>
+            <text x="22" y="185" fontSize="18">✨</text>
+            <text x="180" y="185" fontSize="20">🌟</text>
+          </g>
+        )}
 
         {/* Master Cat Magic Sparkles */}
         {stage === 'master' && (
@@ -123,6 +141,16 @@ export const CatAvatar: React.FC<CatAvatarProps> = ({
           </g>
         )}
 
+        {/* Cosmic Emperor Star Medallion & Mantle Collar */}
+        {stage === 'cosmic' && action !== 'lying' && (
+          <g>
+            <path d="M76,123 Q105,140 134,123" fill="none" stroke="#6D28D9" strokeWidth="8" strokeLinecap="round" />
+            <path d="M78,123 Q105,138 132,123" fill="none" stroke="#FACC15" strokeWidth="2.5" strokeLinecap="round" />
+            <circle cx="105" cy="135" r="8" fill="#4C1D95" stroke="#FACC15" strokeWidth="2" />
+            <text x="105" y="139" fontSize="10" textAnchor="middle">🌟</text>
+          </g>
+        )}
+
         {/* Head and Face Group */}
         <g className={`transition-transform duration-500 ${action === 'eating' ? 'translate-y-3' : ''} ${action === 'bow' ? 'translate-y-7 rotate-12' : ''}`}>
           
@@ -163,6 +191,17 @@ export const CatAvatar: React.FC<CatAvatarProps> = ({
               <ellipse cx="0" cy="4" rx="34" ry="8" fill="#5B21B6" stroke="#FCC419" strokeWidth="2" />
               {/* Gold Star on Hat */}
               <text x="0" y="-12" fontSize="14" textAnchor="middle" fill="#FCC419">⭐</text>
+            </g>
+          )}
+
+          {/* Cosmic Emperor Galaxy Crown & Halo */}
+          {stage === 'cosmic' && (
+            <g transform="translate(105, 28)">
+              <ellipse cx="0" cy="-28" rx="28" ry="6" fill="none" stroke="#38BDF8" strokeWidth="3" filter="url(#softGlow)" />
+              <path d="M-26,6 L-22,-18 L-10,-4 L0,-24 L10,-4 L22,-18 L26,6 Z" fill="url(#cosmicCrownGrad)" stroke="#FEF08A" strokeWidth="2" />
+              <circle cx="0" cy="-10" r="4" fill="#38BDF8" />
+              <circle cx="-14" cy="-3" r="3" fill="#F43F5E" />
+              <circle cx="14" cy="-3" r="3" fill="#F43F5E" />
             </g>
           )}
 

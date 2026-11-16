@@ -162,24 +162,26 @@ export const WORD_DATABASE: Record<string, string[]> = {
   ]
 };
 
-// Алфавит для режима буквенного спринта
+// Алфавит для режима буквенного спринта (все 33 буквы русского алфавита по порядку)
 export const RUSSIAN_ALPHABET = [
-  'А', 'Б', 'В', 'Г', 'Д', 'Е', 'Ж', 'З', 'И', 'К',
-  'Л', 'М', 'Н', 'О', 'П', 'Р', 'С', 'Т', 'У', 'Ф',
-  'Х', 'Ц', 'Ч', 'Ш', 'Щ', 'Э', 'Ю', 'Я'
+  'А', 'Б', 'В', 'Г', 'Д', 'Е', 'Ё', 'Ж', 'З', 'И', 'Й',
+  'К', 'Л', 'М', 'Н', 'О', 'П', 'Р', 'С', 'Т', 'У', 'Ф',
+  'Х', 'Ц', 'Ч', 'Ш', 'Щ', 'Ъ', 'Ы', 'Ь', 'Э', 'Ю', 'Я'
 ];
 
-// Словарь для поиска слов на конкретную букву
+// Словарь для поиска слов на конкретную букву (по 8 детских слов на каждую из 33 букв)
 export const WORDS_BY_LETTER: Record<string, string[]> = {
   'А': ['АРБУЗ', 'АИСТ', 'АНАНАС', 'АПЕЛЬСИН', 'АКУЛА', 'АВТОБУС', 'АЛЬБОМ', 'АСТРА'],
   'Б': ['БЕЛКА', 'БАНАН', 'БАБОЧКА', 'БАРАБАН', 'БАБУШКА', 'БУЛКА', 'БОРЩ', 'БАНТ'],
   'В': ['ВОДА', 'ВОЛК', 'ВЕТЕР', 'ВИШНЯ', 'ВОРОБЕЙ', 'ВЕРТОЛЕТ', 'ВЕСНА', 'ВАРЕНЬЕ'],
   'Г': ['ГОРА', 'ГРИБ', 'ГУСЬ', 'ГРУША', 'ГРОЗА', 'ГОЛУБЬ', 'ГОРОД', 'ГОРОХ'],
   'Д': ['ДОМ', 'ДУБ', 'ДОЖДЬ', 'ДВЕРЬ', 'ДРУГ', 'ДЯТЕЛ', 'ДЕРЕВО', 'ДЕЛЬФИН'],
-  'Е': ['ЕЛЬ', 'ЕНОТ', 'ЕЖЕВИКА', 'ЕДА', 'ЕДИНОРОГ'],
-  'Ж': ['ЖУК', 'ЖИРАФ', 'ЖЕЛУДЬ', 'ЖАБА', 'ЖАР', 'ЖЕМЧУГ'],
+  'Е': ['ЕЛЬ', 'ЕНОТ', 'ЕЖЕВИКА', 'ЕДА', 'ЕДИНОРОГ', 'ЕЖОНОК', 'ЕЛЬНИК', 'ЕЗДА'],
+  'Ё': ['ЁЖ', 'ЁЛКА', 'ЁЖИК', 'ЁРШ', 'МЁД', 'ЛЁД', 'КЛЁН', 'КОТЁНОК'],
+  'Ж': ['ЖУК', 'ЖИРАФ', 'ЖЕЛУДЬ', 'ЖАБА', 'ЖАР', 'ЖЕМЧУГ', 'ЖИВОТ', 'ЖУРАВЛЬ'],
   'З': ['ЗАЯЦ', 'ЗВЕЗДА', 'ЗАМОК', 'ЗОНТ', 'ЗЕБРА', 'ЗЕМЛЯ', 'ЗИМА', 'ЗВОНОК'],
-  'И': ['ИГРА', 'ИГЛА', 'ИРИСКА', 'ИЗБУШКА', 'ИНДЮК', 'ИВА', 'ИНТЕРЕС'],
+  'И': ['ИГРА', 'ИГЛА', 'ИРИСКА', 'ИЗБУШКА', 'ИНДЮК', 'ИВА', 'ИГРУШКА', 'ИСКРА'],
+  'Й': ['ЙОД', 'ЙОГУРТ', 'ЙОГА', 'ЧАЙ', 'МАЙ', 'РОЙ', 'ЗАЙКА', 'ПОПУГАЙ'],
   'К': ['КОТ', 'КИТ', 'КАША', 'КОЛОБОК', 'КНИГА', 'КОНФЕТА', 'КОСМОС', 'КОРАБЛЬ'],
   'Л': ['ЛИСА', 'ЛЕВ', 'ЛУНА', 'ЛОДКА', 'ЛАМПА', 'ЛИМОН', 'ЛУГ', 'ЛАСТОЧКА'],
   'М': ['МУР', 'МЯЧ', 'МАМА', 'МЕД', 'МЫШКА', 'МОЛОКО', 'МАШИНА', 'МОРЕ'],
@@ -191,15 +193,34 @@ export const WORDS_BY_LETTER: Record<string, string[]> = {
   'Т': ['ТИГР', 'ТУЧА', 'ТОРТ', 'ТРАВА', 'ТУРНИР', 'ТЕЛЕФОН', 'ТРАКТОР', 'ТИШИНА'],
   'У': ['УТКА', 'УЛИТКА', 'УТРО', 'УЗОР', 'УЛЫБКА', 'УДОЧКА', 'УЖИН', 'УХО'],
   'Ф': ['ФЛАГ', 'ФОНАРЬ', 'ФРУКТЫ', 'ФОТО', 'ФОКУС', 'ФИАЛКА', 'ФУТБОЛ', 'ФОРМА'],
-  'Х': ['ХЛЕБ', 'ХОМЯК', 'ХВОСТ', 'ХУДОЖНИК', 'ХАТА', 'ХОЛМ', 'ХЛОПОК'],
-  'Ц': ['ЦИРК', 'ЦВЕТОК', 'ЦЫПЛЕНОК', 'ЦАРЬ', 'ЦЕПЬ'],
-  'Ч': ['ЧАЙ', 'ЧАСЫ', 'ЧЕРЕПАХА', 'ЧАШКА', 'ЧУДО', 'ЧИСТОТА'],
-  'Ш': ['ШАР', 'ШУБА', 'ШКОЛА', 'ШЛЯПА', 'ШОКОЛАД', 'ШАХМАТЫ', 'ШИШКА'],
-  'Щ': ['ЩЕНОК', 'ЩУКА', 'ЩЕТКА', 'ЩИТ'],
-  'Э': ['ЭКРАН', 'ЭЛЬФ', 'ЭТАЖ', 'ЭХО', 'ЭСКИМО'],
-  'Ю': ['ЮЛА', 'ЮБКА', 'ЮНОША', 'ЮГ'],
-  'Я': ['ЯБЛОКО', 'ЯГОДА', 'ЯХТА', 'ЯЗЫК', 'ЯЩЕРИЦА', 'ЯНВАРЬ']
+  'Х': ['ХЛЕБ', 'ХОМЯК', 'ХВОСТ', 'ХУДОЖНИК', 'ХАТА', 'ХОЛМ', 'ХЛОПОК', 'ХОР'],
+  'Ц': ['ЦИРК', 'ЦВЕТОК', 'ЦЫПЛЕНОК', 'ЦАРЬ', 'ЦЕПЬ', 'ЦАПЛЯ', 'ЦВЕТ', 'ЦЕНТР'],
+  'Ч': ['ЧАЙ', 'ЧАСЫ', 'ЧЕРЕПАХА', 'ЧАШКА', 'ЧУДО', 'ЧИСТОТА', 'ЧАЙКА', 'ЧЕМОДАН'],
+  'Ш': ['ШАР', 'ШУБА', 'ШКОЛА', 'ШЛЯПА', 'ШОКОЛАД', 'ШАХМАТЫ', 'ШИШКА', 'ШАПКА'],
+  'Щ': ['ЩЕНОК', 'ЩУКА', 'ЩЕТКА', 'ЩИТ', 'ЩЕКА', 'ЩЕГОЛ', 'ЩАВЕЛЬ', 'ЩЕПКА'],
+  'Ъ': ['СЪЕЛ', 'ВЪЕЗД', 'ПОДЪЕМ', 'ОБЪЕМ', 'СЪЕМКА', 'ОБЪЯТИЯ', 'ОТЪЕЗД', 'РАЗЪЕЗД'],
+  'Ы': ['СЫР', 'ДЫМ', 'БЫК', 'МЫЛО', 'РЫБА', 'МЫШКА', 'ЛЫЖИ', 'ТЫКВА'],
+  'Ь': ['СОЛЬ', 'ДЕНЬ', 'ТЕНЬ', 'КОНЬ', 'ЛОСЬ', 'ГУСЬ', 'РЫСЬ', 'ОЛЕНЬ'],
+  'Э': ['ЭКРАН', 'ЭЛЬФ', 'ЭТАЖ', 'ЭХО', 'ЭСКИМО', 'ЭКСКАВАТОР', 'ЭКИПАЖ', 'ЭНЕРГИЯ'],
+  'Ю': ['ЮЛА', 'ЮБКА', 'ЮНОША', 'ЮГ', 'ЮМОР', 'ЮНГА', 'ЮРТА', 'УЮТ'],
+  'Я': ['ЯБЛОКО', 'ЯГОДА', 'ЯХТА', 'ЯЗЫК', 'ЯЩЕРИЦА', 'ЯНВАРЬ', 'ЯКОРЬ', 'ЯСТРЕБ']
 };
+
+export const VOWEL_LETTERS = ['А', 'Е', 'Ё', 'И', 'О', 'У', 'Ы', 'Э', 'Ю', 'Я'];
+
+export function getNextCustomSprintLetter(
+  selectedLetters: string[],
+  currentIndex: number
+): { letter: string; nextIndex: number } {
+  const validList = selectedLetters.filter(l => WORDS_BY_LETTER[l]?.length > 0);
+  if (validList.length === 0) {
+    return { letter: 'А', nextIndex: 0 };
+  }
+  const normalizedIdx = ((currentIndex % validList.length) + validList.length) % validList.length;
+  const letter = validList[normalizedIdx];
+  const nextIndex = (normalizedIdx + 1) % validList.length;
+  return { letter, nextIndex };
+}
 
 export interface MathProblem {
   q: string;
@@ -435,20 +456,51 @@ export const PRESET_STORIES = [
 
 export const formatSyllables = (word: string): string => {
   if (!word) return "";
-  const vowels = "АЕЁИОУЫЭЮЯ";
-  let result = "";
-  for (let i = 0; i < word.length; i++) {
-    result += word[i];
-    if (word[i] === ' ') {
-      // Space between words in a phrase
-      continue;
+  const vowels = "АЕЁИОУЫЭЮЯаеёиоуыэюя";
+  const modifiers = "ЙЬЪйьъ";
+
+  const splitSingleWord = (w: string): string => {
+    const vowelIndices: number[] = [];
+    for (let i = 0; i < w.length; i++) {
+      if (vowels.includes(w[i])) vowelIndices.push(i);
     }
-    if (vowels.includes(word[i]) && i < word.length - 1 && word[i + 1] !== ' ') {
-      result += "-";
+    if (vowelIndices.length <= 1) return w;
+
+    const parts: string[] = [];
+    let start = 0;
+    for (let v = 0; v < vowelIndices.length - 1; v++) {
+      const currVowel = vowelIndices[v];
+      const nextVowel = vowelIndices[v + 1];
+      const consonantsBetween = nextVowel - currVowel - 1;
+      let splitAfter = currVowel;
+
+      if (consonantsBetween === 0) {
+        splitAfter = currVowel;
+      } else if (consonantsBetween === 1) {
+        if (modifiers.includes(w[currVowel + 1]) && currVowel + 1 < nextVowel - 1) {
+          splitAfter = currVowel + 1;
+        } else {
+          splitAfter = currVowel;
+        }
+      } else {
+        // 2 or more consonants between vowels: keep first consonant (and Ь/Ъ/Й if right after) with current syllable
+        splitAfter = currVowel + 1;
+        if (splitAfter + 1 < nextVowel && modifiers.includes(w[splitAfter + 1])) {
+          splitAfter += 1;
+        }
+      }
+
+      parts.push(w.slice(start, splitAfter + 1));
+      start = splitAfter + 1;
     }
-  }
-  if (result.endsWith("-")) result = result.slice(0, -1);
-  return result;
+    parts.push(w.slice(start));
+    return parts.join("-");
+  };
+
+  return word
+    .split(" ")
+    .map(splitSingleWord)
+    .join(" ");
 };
 
 export interface RiddleItem {

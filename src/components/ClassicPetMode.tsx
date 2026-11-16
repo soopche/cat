@@ -73,7 +73,7 @@ interface ClassicPetModeProps {
   rewardSeconds: number;
   sessionWordCount: number;
   onIncrementSessionWordCount: () => void;
-  onWordCompleted?: (wordsCount?: number, charLength?: number) => void;
+  onWordCompleted?: (wordsCount?: number, charLength?: number, meta?: { category?: string; activityType?: string }) => void;
   questAnnounceMessage?: string | null;
   onClearQuestAnnounce?: () => void;
   onUnlockAchievement?: (id: string) => void;
@@ -524,28 +524,28 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
     triggerRiddle
   ]);
 
-  // Complete Word with 2x XP for Riddles, Math, and Sport
+  // Complete Word with increased XP reward and 2x XP for Riddles, Math, and Sport
   const completeWord = useCallback(() => {
     const duration = (Date.now() - wordStartTimeRef.current) / 1000;
-    const lengthBonus = Math.max(0, (currentWord.length - 3) * 5);
-    let baseBonus = 10 + lengthBonus;
+    const lengthBonus = Math.max(0, (currentWord.length - 3) * 7);
+    let baseBonus = 18 + lengthBonus;
 
     if (duration < 5 && !hintKey) {
-      baseBonus += 5;
+      baseBonus += 7;
     }
 
     let gainedXp = isDoubleXp ? baseBonus * 2 : baseBonus;
 
     if (activityType === 'sport') {
-      gainedXp = Math.max(gainedXp, 36);
+      gainedXp = Math.max(gainedXp, 50);
       setMessage(`ОТЛИЧНАЯ РАЗМИНКА! +${gainedXp} XP 🏆 (2x ОПЫТ!)`);
       if (onUnlockAchievement) onUnlockAchievement('sport_hero');
     } else if (activityType === 'riddle') {
-      gainedXp = Math.max(gainedXp, 30);
+      gainedXp = Math.max(gainedXp, 45);
       setMessage(`ЗАГАДКА РАЗГАДАНА! +${gainedXp} XP 🌟 (2x ОПЫТ!)`);
       if (onUnlockAchievement) onUnlockAchievement('riddle_genius');
     } else if (activityType === 'math') {
-      gainedXp = Math.max(gainedXp, 30);
+      gainedXp = Math.max(gainedXp, 45);
       setMessage(`ВЕРНЫЙ РАСЧЁТ! +${gainedXp} XP 🧮 (2x ОПЫТ!)`);
     } else if (duration < 5 && !hintKey) {
       setMessage(`СУПЕР БЫСТРО! +${gainedXp} XP 🌟`);
@@ -564,7 +564,7 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
 
     // Notify word completion for reward timer and achievements
     if (onWordCompleted) {
-      onWordCompleted(1, currentWord.length);
+      onWordCompleted(1, currentWord.length, { category: currentCategory, activityType });
     } else if (isRewardMode) {
       const rewardBonus = currentWord.length >= 6 ? 15 : 12;
       onAddRewardSeconds(rewardBonus);
@@ -592,22 +592,22 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
 
   const updateCatMoodAndState = (category: string, word: string) => {
     let action: CatAction = 'dance';
-    // Exactly 15 words to raise indicator from 0% to maximum 100% (100 / 15 = 6.6666...)
-    const STAT_PER_WORD = 100 / 15;
+    // Exactly 8 words to raise indicator from 0% to maximum 100% (100 / 8 = 12.5%)
+    const STAT_PER_WORD = 100 / 8;
 
     if (category === 'SPORT') {
       action = 'jump';
       onUpdateStats(s => ({
         ...s,
-        happiness: Math.min(100, Number((s.happiness + 15).toFixed(1))),
-        sleep: Math.min(100, Number((s.sleep + 10).toFixed(1))),
+        happiness: Math.min(100, Number((s.happiness + STAT_PER_WORD * 1.5).toFixed(1))),
+        sleep: Math.min(100, Number((s.sleep + STAT_PER_WORD).toFixed(1))),
         hunger: Math.max(0, Number((s.hunger - 3).toFixed(1)))
       }));
-    } else if (category === 'RIDDLE') {
+    } else if (category === 'RIDDLE' || category === 'MATH') {
       action = 'smart';
       onUpdateStats(s => ({
         ...s,
-        intelligence: Math.min(100, Number((s.intelligence + 15).toFixed(1)))
+        intelligence: Math.min(100, Number((s.intelligence + STAT_PER_WORD * 1.5).toFixed(1)))
       }));
     } else if (category === 'HUNGER') {
       action = 'eating';
@@ -776,7 +776,7 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
   const expectedChar = !waitingForConfirmation && currentWord ? currentWord[typedChars.length] : undefined;
 
   return (
-    <div className="w-full max-w-6xl flex flex-col lg:flex-row gap-3 relative">
+    <div translate="no" className="notranslate w-full max-w-6xl flex flex-col lg:flex-row gap-3 relative">
       
       {/* Mailbox Drawer / Popup (Opens ONLY when child clicks the envelope) */}
       {isMailboxOpen && pendingLetter && (
@@ -1098,9 +1098,9 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
             </button>
 
             {/* Word Display */}
-            <div className="text-4xl sm:text-6xl font-mono font-black tracking-widest text-center">
+            <div translate="no" className="notranslate text-4xl sm:text-6xl font-mono font-black tracking-widest text-center select-none">
               {waitingForConfirmation ? (
-                <span className="text-emerald-500 animate-fade-in-up">
+                <span translate="no" className="notranslate text-emerald-500 animate-fade-in-up tracking-wider">
                   {formatSyllables(currentWord)}
                 </span>
               ) : (
@@ -1109,7 +1109,7 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
                   if (index < typedChars.length) colorClass = "text-emerald-500";
                   else if (index === typedChars.length) colorClass = "text-slate-900 border-b-4 border-orange-400 animate-pulse";
                   return (
-                    <span key={index} className={`${colorClass} transition-colors duration-150`}>
+                    <span key={index} translate="no" className={`notranslate inline-block px-[1px] ${colorClass} transition-colors duration-150`}>
                       {char === ' ' ? '\u00A0' : char}
                     </span>
                   );

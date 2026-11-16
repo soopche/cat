@@ -17,6 +17,7 @@ import {
   Shirt
 } from 'lucide-react';
 import { AppMode, CatLevel } from '../types';
+import { getCatXpProgressInfo } from '../data/quests';
 import { User } from 'firebase/auth';
 
 interface HeaderBarProps {
@@ -77,17 +78,19 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       case 'adult': return '🦁 Взрослый';
       case 'smart': return '🎩 Учёный';
       case 'master': return '👑 Магистр';
+      case 'cosmic': return '🌌 Космический';
     }
   };
 
   const getNextLevelXp = (lvl: CatLevel) => {
     switch (lvl) {
-      case 'baby': return 300;
-      case 'kitten': return 900;
-      case 'teen': return 2000;
-      case 'adult': return 3800;
+      case 'baby': return 250;
+      case 'kitten': return 700;
+      case 'teen': return 1500;
+      case 'adult': return 3000;
       case 'smart': return 6000;
-      case 'master': return 6000;
+      case 'master': return 12000;
+      case 'cosmic': return 12000;
     }
   };
 
@@ -141,11 +144,20 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           gradient: 'from-amber-400 to-rose-500',
           shadow: 'shadow-rose-200'
         };
+      case 'cosmic':
+        return {
+          title: 'ИМПЕРАТОР',
+          subTitle: 'Возраст: Космический',
+          emoji: '🌌',
+          gradient: 'from-indigo-600 via-purple-600 to-amber-400',
+          shadow: 'shadow-purple-300'
+        };
     }
   };
 
   const stageMeta = getStageMeta(displayLevel);
   const nextThreshold = getNextLevelXp(level);
+  const xpInfo = getCatXpProgressInfo(xp);
 
   return (
     <header className="w-full max-w-7xl bg-white/95 backdrop-blur-md rounded-2xl shadow-sm border border-slate-200/80 p-2 sm:p-3 mb-2 flex flex-col gap-2">
@@ -169,10 +181,18 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
             {/* Level & XP Info with clean Wardrobe Button */}
             <div className="flex items-center gap-2 text-xs text-slate-500 font-medium flex-wrap mt-1">
-              <span className="flex items-center gap-1 text-purple-700 font-extrabold bg-purple-50 border border-purple-100 px-2 py-0.5 rounded-md">
-                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                {xp} / {level === 'master' ? 'МАКСИМУМ' : `${nextThreshold} XP`}
-              </span>
+              <div className="flex flex-col gap-1 bg-purple-50 border border-purple-100 px-2.5 py-1 rounded-lg min-w-[115px]">
+                <span className="flex items-center gap-1 text-purple-700 font-extrabold leading-none">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  {xp} / {level === 'cosmic' ? 'МАКСИМУМ' : `${nextThreshold} XP`}
+                </span>
+                <div className="w-full h-1.5 bg-purple-200/70 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-amber-400 via-orange-500 to-purple-600 rounded-full transition-all duration-700 ease-out"
+                    style={{ width: `${xpInfo.progressPercent}%` }}
+                  />
+                </div>
+              </div>
 
               {/* Clean Growth & Wardrobe Modal trigger */}
               <button

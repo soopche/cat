@@ -14,7 +14,8 @@ import {
   CheckCircle2,
   BookmarkCheck,
   MessageCircle,
-  Shirt
+  Shirt,
+  Users
 } from 'lucide-react';
 import { AppMode, CatLevel } from '../types';
 import { getCatXpProgressInfo } from '../data/quests';
@@ -41,6 +42,10 @@ interface HeaderBarProps {
   rewardSeconds?: number;
   sessionWordCount?: number;
   streakDays: number;
+  isCoopOpen?: boolean;
+  coopRoomCode?: string | null;
+  coopPlayersCount?: number;
+  onToggleCoop?: () => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -63,7 +68,11 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   isRewardMode,
   rewardSeconds = 0,
   sessionWordCount = 0,
-  streakDays
+  streakDays,
+  isCoopOpen = false,
+  coopRoomCode = null,
+  coopPlayersCount = 1,
+  onToggleCoop
 }) => {
   const formatTimerClock = (seconds: number) => {
     const m = Math.floor(seconds / 60);
@@ -216,7 +225,29 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </div>
 
         {/* User Auth & Quick Actions */}
-        <div className="flex items-center gap-1.5 sm:gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+          {/* Co-op Multiplayer Button (strictly lazy: connects only when user clicks it!) */}
+          {onToggleCoop && (
+            <button
+              type="button"
+              onClick={onToggleCoop}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black transition shadow-sm border active:scale-95 ${
+                coopRoomCode
+                  ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white border-indigo-700 ring-2 ring-purple-300'
+                  : isCoopOpen
+                  ? 'bg-indigo-600 text-white border-indigo-700'
+                  : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
+              }`}
+              title="Совместная игра и соревнование с другом по коду комнаты"
+            >
+              <Users className="w-4 h-4" />
+              <span>
+                {coopRoomCode
+                  ? `Кооператив (${coopRoomCode} • ${coopPlayersCount})`
+                  : 'Кооператив'}
+              </span>
+            </button>
+          )}
           
           {/* Daily Quests button right next to Leaderboard */}
           <button
@@ -423,7 +454,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           }`}
         >
           <MessageCircle className="w-4 h-4 text-pink-500" />
-          <span>Диалог с котиком</span>
+          <span>{coopRoomCode ? 'Диалог с другом' : 'Диалог с котиком'}</span>
         </button>
       </div>
     </header>

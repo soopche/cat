@@ -8,7 +8,9 @@ import {
   Trophy, 
   CheckCircle, 
   Play, 
-  FileText
+  FileText,
+  Users,
+  Crown
 } from 'lucide-react';
 import { PRESET_STORIES } from '../data/words';
 import { VirtualKeyboard } from './VirtualKeyboard';
@@ -20,6 +22,11 @@ import {
 } from '../utils/soundAndEffects';
 import { ScoreRecord } from '../firebase';
 import { User } from 'firebase/auth';
+import {
+  CoopPlayerState,
+  CoopGameConfig,
+  determineCoopWinner
+} from '../utils/mqttCoopRoom';
 
 interface SpeedTextModeProps {
   user: User | null;
@@ -35,6 +42,14 @@ interface SpeedTextModeProps {
   isRewardMode?: boolean;
   onWordCompleted?: (wordsCount?: number, charLength?: number) => void;
   onSpeedTextCompleted?: (wpm: number, accuracy: number) => void;
+  // Co-op props
+  isCoopRoomActive?: boolean;
+  isCoopHost?: boolean;
+  coopPartner?: CoopPlayerState | null;
+  coopSharedConfig?: CoopGameConfig | null;
+  coopRoundTrigger?: number;
+  onPublishCoopConfig?: (config: Partial<CoopGameConfig>, startRound?: boolean) => void;
+  onUpdateCoopSelfProgress?: (patch: Partial<CoopPlayerState>) => void;
 }
 
 // Sanitize custom or preset text so uncommon typographic symbols don't trap the user on tablet/desktop keyboards
@@ -62,7 +77,14 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
   isMobileMode,
   onToggleMobileMode,
   onWordCompleted,
-  onSpeedTextCompleted
+  onSpeedTextCompleted,
+  isCoopRoomActive = false,
+  isCoopHost = false,
+  coopPartner = null,
+  coopSharedConfig = null,
+  coopRoundTrigger = 0,
+  onPublishCoopConfig,
+  onUpdateCoopSelfProgress
 }) => {
   const [selectedStoryId, setSelectedStoryId] = useState<string>(PRESET_STORIES[0].id);
   const [targetText, setTargetText] = useState<string>(() => sanitizeTypingText(PRESET_STORIES[0].text));
@@ -71,6 +93,7 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
   const [startTime, setStartTime] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [isFinished, setIsFinished] = useState<boolean>(false);
+  const [finishedAtTime, setFinishedAtTime] = useState<number | undefined>(undefined);
   const [showCustomModal, setShowCustomModal] = useState<boolean>(false);
   const [customTextDraft, setCustomTextDraft] = useState<string>('');
   const [wpm, setWpm] = useState<number>(0);
@@ -85,12 +108,13 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
   const typedTextRef = useRef<string>('');
   const errorsCountRef = useRef<number>(0);
   const lastKeydownTimeRef = useRef<number>(0);
+  const appliedConfigIdRef = useRef<string>('');
 
   typedTextRef.current = typedText;
   errorsCountRef.current = errorsCount;
 
   // Reset or switch text
-  const resetTest = useCallback((newText?: string) => {
+  const resetTest = useCallback((newText?: string, broadcastToCoop: boolean = false, newStoryId?: string) => {
     const rawToUse = newText !== undefined ? newText : targetText;
     const textToUse = sanitizeTypingText(rawToUse) || sanitizeTypingText(PRESET_STORIES[0].text);
     setTypedText('');
@@ -100,13 +124,76 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
     setStartTime(null);
     setElapsedSeconds(0);
     setIsFinished(false);
+    setFinishedAtTime(undefined);
     setWpm(0);
     setCpm(0);
     setAccuracy(100);
     setHasSaved(false);
     if (timerRef.current) clearInterval(timerRef.current);
     setTargetText(textToUse);
-  }, [targetText]);
+
+    onUpdateCoopSelfProgress?.({
+      mode: 'speed_text',
+      progressPercent: 0,
+      wordsCompleted: 0,
+      wpm: 0,
+      cpm: 0,
+      accuracy: 100,
+      elapsedSeconds: 0,
+      isFinished: false,
+      finishedAt: undefined
+    });
+
+    if (broadcastToCoop && isCoopRoomActive && isCoopHost) {
+      onPublishCoopConfig?.(
+        {
+          mode: 'speed_text',
+          speedStoryId: newStoryId || selectedStoryId,
+          speedTargetText: textToUse
+        },
+        true
+      );
+    }
+  }, [targetText, isCoopRoomActive, isCoopHost, selectedStoryId, onPublishCoopConfig, onUpdateCoopSelfProgress]);
+
+  // Sync when Co-op shared config updates (Guest round start)
+  useEffect(() => {
+    if (!isCoopRoomActive || isCoopHost || !coopSharedConfig || coopSharedConfig.mode !== 'speed_text') return;
+    if (coopSharedConfig.configId && coopSharedConfig.configId !== appliedConfigIdRef.current) {
+      appliedConfigIdRef.current = coopSharedConfig.configId;
+      if (coopSharedConfig.speedStoryId) {
+        setSelectedStoryId(coopSharedConfig.speedStoryId);
+      }
+      if (coopSharedConfig.speedTargetText) {
+        resetTest(coopSharedConfig.speedTargetText, false);
+      }
+    }
+  }, [isCoopRoomActive, isCoopHost, coopSharedConfig, resetTest]);
+
+  // Also reset round when Host clicks "Начать игру" in CoopBar
+  useEffect(() => {
+    if (coopRoundTrigger > 0 && isCoopRoomActive) {
+      if (isCoopHost) {
+        resetTest(targetText, true, selectedStoryId);
+      } else {
+        resetTest(coopSharedConfig?.speedTargetText || targetText, false);
+      }
+    }
+  }, [coopRoundTrigger]);
+
+  // Publish initial host config when entering SpeedTextMode as Host
+  useEffect(() => {
+    if (isCoopRoomActive && isCoopHost) {
+      onPublishCoopConfig?.(
+        {
+          mode: 'speed_text',
+          speedStoryId: selectedStoryId,
+          speedTargetText: targetText
+        },
+        false
+      );
+    }
+  }, [isCoopRoomActive, isCoopHost]);
 
   // Handle timer without resetting interval on every typed letter
   useEffect(() => {
@@ -125,6 +212,18 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
         const totalAttempts = chars + errorsCountRef.current;
         const acc = totalAttempts > 0 ? Math.round((chars / totalAttempts) * 100) : 100;
         setAccuracy(acc);
+
+        const pct = Math.min(100, Math.round((chars / Math.max(1, targetText.length)) * 100));
+        onUpdateCoopSelfProgress?.({
+          mode: 'speed_text',
+          progressPercent: pct,
+          wordsCompleted: words,
+          wpm: currentWpm,
+          cpm: currentCpm,
+          accuracy: acc,
+          elapsedSeconds: seconds,
+          isFinished: false
+        });
       };
 
       updateLiveMetrics();
@@ -133,14 +232,16 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [startTime, isFinished]);
+  }, [startTime, isFinished, targetText.length, onUpdateCoopSelfProgress]);
 
   // Complete handling
   const completeTyping = useCallback((finalErrors: number) => {
+    const finishNow = Date.now();
     setIsFinished(true);
+    setFinishedAtTime(finishNow);
     if (timerRef.current) clearInterval(timerRef.current);
 
-    const duration = startTime ? Math.max(1, Math.round((Date.now() - startTime) / 1000)) : 1;
+    const duration = startTime ? Math.max(1, Math.round((finishNow - startTime) / 1000)) : 1;
     const words = targetText.trim().split(/\s+/).length;
     const finalWpm = Math.round((words / duration) * 60);
     const finalCpm = Math.round((targetText.length / duration) * 60);
@@ -152,13 +253,25 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
     setCpm(finalCpm);
     setAccuracy(finalAcc);
 
+    onUpdateCoopSelfProgress?.({
+      mode: 'speed_text',
+      progressPercent: 100,
+      wordsCompleted: words,
+      wpm: finalWpm,
+      cpm: finalCpm,
+      accuracy: finalAcc,
+      elapsedSeconds: duration,
+      isFinished: true,
+      finishedAt: finishNow
+    });
+
     if (soundEnabled) playSuccessFanfare();
     launchConfetti();
 
     const xpEarned = Math.round(words * 2 + finalWpm * 0.5);
     onAddXp(xpEarned);
     onSpeedTextCompleted?.(finalWpm, finalAcc);
-  }, [startTime, targetText, soundEnabled, onAddXp, onSpeedTextCompleted]);
+  }, [startTime, targetText, soundEnabled, onAddXp, onSpeedTextCompleted, onUpdateCoopSelfProgress]);
 
   // Handle key press
   const handleCharInput = useCallback((char: string) => {
@@ -192,8 +305,12 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
       // Update live stats immediately so WPM/CPM feel responsive on every keystroke
       const secs = Math.max(1, (now - effectiveStart) / 1000);
       const wordsNow = nextTyped.trim().split(/\s+/).filter(Boolean).length;
-      setCpm(Math.round((nextTyped.length / secs) * 60));
-      setWpm(Math.round((wordsNow / secs) * 60));
+      const liveCpm = Math.round((nextTyped.length / secs) * 60);
+      const liveWpm = Math.round((wordsNow / secs) * 60);
+      setCpm(liveCpm);
+      setWpm(liveWpm);
+
+      const pct = Math.min(100, Math.round((nextTyped.length / Math.max(1, targetText.length)) * 100));
 
       if (expectedChar === ' ') {
         const lastWord = targetText.slice(0, currentTyped.length).trim().split(/\s+/).pop() || '';
@@ -206,7 +323,16 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
           onWordCompleted?.(1, lastWord.length);
         }
         completeTyping(errorsCountRef.current);
+        return;
       }
+
+      onUpdateCoopSelfProgress?.({
+        mode: 'speed_text',
+        progressPercent: pct,
+        wordsCompleted: wordsNow,
+        wpm: liveWpm,
+        cpm: liveCpm
+      });
     } else {
       if (soundEnabled) playErrorTone();
       const nextErr = errorsCountRef.current + 1;
@@ -217,7 +343,7 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
         setAccuracy(Math.round((currentTyped.length / totalAttempts) * 100));
       }
     }
-  }, [isFinished, startTime, targetText, soundEnabled, completeTyping, onWordCompleted]);
+  }, [isFinished, startTime, targetText, soundEnabled, completeTyping, onWordCompleted, onUpdateCoopSelfProgress]);
 
   // Physical keyboard listener
   useEffect(() => {
@@ -229,7 +355,7 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
       }
 
       if (e.key === 'Escape') {
-        resetTest();
+        resetTest(targetText, isCoopHost, selectedStoryId);
         return;
       }
 
@@ -254,14 +380,13 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleCharInput, resetTest, showCustomModal]);
+  }, [handleCharInput, resetTest, showCustomModal, targetText, isCoopHost, selectedStoryId]);
 
-  // Tablet / Android Chrome IME fallback input handler (when keydown sends 'Unidentified' / keyCode 229)
+  // Tablet / Android Chrome IME fallback input handler
   const handleTabletInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     e.target.value = '';
     if (!val || showCustomModal) return;
-    // Skip if physical keydown already processed this keystroke within the last 25ms
     if (Date.now() - lastKeydownTimeRef.current < 25) return;
     const lastChar = val[val.length - 1];
     if (lastChar) {
@@ -279,8 +404,8 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
       if (content && content.trim().length > 0) {
         const sanitized = sanitizeTypingText(content);
         if (sanitized) {
-          resetTest(sanitized);
           setSelectedStoryId('custom');
+          resetTest(sanitized, true, 'custom');
           setShowCustomModal(false);
           setCustomTextDraft('');
         }
@@ -308,8 +433,8 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
       }
     ];
     const pick = themes[Math.floor(Math.random() * themes.length)];
-    resetTest(pick.text);
     setSelectedStoryId('generated');
+    resetTest(pick.text, true, 'generated');
   };
 
   const handleSaveToLeaderboard = () => {
@@ -336,6 +461,33 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
   const currentChar = !isFinished && typedText.length < targetText.length
     ? targetText[typedText.length]
     : undefined;
+
+  const myProgressPct = Math.min(100, Math.round((typedText.length / Math.max(1, targetText.length)) * 100));
+  const partnerProgressPct = coopPartner?.progressPercent ?? 0;
+
+  const canChangeSettings = !isCoopRoomActive || isCoopHost;
+
+  const selfStateForWinner: CoopPlayerState = {
+    playerId: 'self',
+    name: playerName || user?.displayName || 'Ты',
+    isHost: isCoopHost,
+    color: 'orange',
+    mode: 'speed_text',
+    progressPercent: myProgressPct,
+    wordsCompleted: typedText.trim().split(/\s+/).filter(Boolean).length,
+    lettersMastered: 0,
+    wpm,
+    cpm,
+    accuracy,
+    elapsedSeconds,
+    isFinished,
+    finishedAt: finishedAtTime,
+    sessionWordsTotal: 0,
+    rewardSecondsTotal: 0,
+    updatedAt: Date.now()
+  };
+
+  const coopWinner = isCoopRoomActive ? determineCoopWinner(selfStateForWinner, coopPartner) : null;
 
   return (
     <div translate="no" className="notranslate w-full max-w-5xl flex flex-col items-center gap-3">
@@ -374,15 +526,16 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
             <button
               key={story.id}
               type="button"
+              disabled={!canChangeSettings}
               onClick={(e) => {
                 e.currentTarget.blur();
                 setSelectedStoryId(story.id);
-                resetTest(story.text);
+                resetTest(story.text, true, story.id);
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
               }}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 border ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 border disabled:opacity-60 ${
                 selectedStoryId === story.id
                   ? 'bg-blue-500 text-white border-blue-600 shadow-sm'
                   : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
@@ -391,43 +544,54 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
               {story.title}
             </button>
           ))}
+
+          {!canChangeSettings && (
+            <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2.5 py-1 rounded-xl flex items-center gap-1">
+              <Crown className="w-3.5 h-3.5 text-amber-500" />
+              Рассказ выбирает создатель комнаты
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={handleGenerateStory}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
-            }}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 transition shadow-sm"
-            title="Сгенерировать новый простой детский рассказ"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-purple-500" />
-            <span>Генерировать</span>
-          </button>
+          {canChangeSettings && (
+            <>
+              <button
+                type="button"
+                onClick={handleGenerateStory}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+                }}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 transition shadow-sm"
+                title="Сгенерировать новый простой детский рассказ"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-purple-500" />
+                <span>Генерировать</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  setShowCustomModal(true);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+                }}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition shadow-sm"
+                title="Ввести или загрузить свой собственный текст"
+              >
+                <Upload className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Свой текст</span>
+              </button>
+            </>
+          )}
 
           <button
             type="button"
             onClick={(e) => {
               e.currentTarget.blur();
-              setShowCustomModal(true);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
-            }}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition shadow-sm"
-            title="Ввести или загрузить свой собственный текст"
-          >
-            <Upload className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Свой текст</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={(e) => {
-              e.currentTarget.blur();
-              resetTest();
+              resetTest(targetText, isCoopHost, selectedStoryId);
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
@@ -439,6 +603,73 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Co-op Dual Race Track when in a Co-op Room */}
+      {isCoopRoomActive && (
+        <div className="w-full bg-white rounded-2xl p-3.5 shadow-sm border-2 border-indigo-100 flex flex-col gap-2.5">
+          <div className="flex items-center justify-between text-xs font-bold flex-wrap gap-2">
+            <span className="flex items-center gap-1.5 text-indigo-700 font-black uppercase">
+              <Users className="w-4 h-4 text-indigo-600" />
+              Совместная гонка по тексту
+            </span>
+            {coopPartner ? (
+              <span className="bg-amber-100 text-amber-900 border border-amber-300 px-2.5 py-0.5 rounded-full font-extrabold">
+                {myProgressPct > partnerProgressPct
+                  ? `🥇 Ты впереди (${myProgressPct}% против ${partnerProgressPct}%)`
+                  : partnerProgressPct > myProgressPct
+                  ? `🥇 Лидирует ${coopPartner.name} (${partnerProgressPct}% против ${myProgressPct}%)`
+                  : `⚡ Идёте наравне (${myProgressPct}%)`}
+              </span>
+            ) : (
+              <span className="text-slate-400">Ожидание второго игрока в комнате...</span>
+            )}
+          </div>
+
+          {/* Player 1 (Self - Orange Cat) */}
+          <div className="flex items-center gap-2.5">
+            <span className="w-28 truncate text-xs font-black text-orange-700 flex items-center gap-1">
+              <span>🐱</span>
+              <span>Ты ({wpm} WPM)</span>
+            </span>
+            <div className="relative flex-1 h-6 bg-orange-50 rounded-full overflow-hidden border border-orange-200 p-0.5">
+              <div
+                className="h-full bg-gradient-to-r from-amber-400 to-orange-500 rounded-full transition-all duration-300"
+                style={{ width: `${myProgressPct}%` }}
+              />
+              <div
+                className="absolute top-1/2 -translate-y-1/2 text-base transition-all duration-300 select-none"
+                style={{ left: `clamp(4px, calc(${myProgressPct}% - 12px), calc(100% - 28px))` }}
+              >
+                🐱
+              </div>
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 text-xs">🏁</div>
+            </div>
+            <span className="w-10 text-right font-mono text-xs font-black text-orange-700">{myProgressPct}%</span>
+          </div>
+
+          {/* Player 2 (Partner - Blue Cat) */}
+          <div className="flex items-center gap-2.5">
+            <span className="w-28 truncate text-xs font-black text-indigo-700 flex items-center gap-1">
+              <span>🐾</span>
+              <span>{coopPartner ? `${coopPartner.name} (${coopPartner.wpm} WPM)` : 'Друг...'}</span>
+            </span>
+            <div className="relative flex-1 h-6 bg-indigo-50 rounded-full overflow-hidden border border-indigo-200 p-0.5">
+              <div
+                className="h-full bg-gradient-to-r from-sky-400 to-indigo-600 rounded-full transition-all duration-300"
+                style={{ width: `${partnerProgressPct}%` }}
+              />
+              <div
+                className="absolute top-1/2 -translate-y-1/2 text-base transition-all duration-300 select-none"
+                style={{ left: `clamp(4px, calc(${partnerProgressPct}% - 12px), calc(100% - 28px))` }}
+              >
+                🐾
+              </div>
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 text-xs">🏁</div>
+            </div>
+            <span className="w-10 text-right font-mono text-xs font-black text-indigo-700">{partnerProgressPct}%</span>
+          </div>
+        </div>
+      )}
 
       {/* Live Stats Display Dashboard */}
       <div className="w-full grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -532,58 +763,125 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
         </div>
       </div>
 
-      {/* Completion Modal / Banner */}
-      {isFinished && (
-        <div className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 rounded-3xl p-6 text-white shadow-xl flex flex-col md:flex-row items-center justify-between gap-4 animate-fade-in-up">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-3xl">🎉</span>
-              <h3 className="text-2xl font-black">Поздравляем! Текст завершён!</h3>
+      {/* Completion Modal / Banner (includes Co-op Winner & Partner Stats Comparison) */}
+      {(isFinished || (isCoopRoomActive && coopPartner?.isFinished)) && (
+        <div className="w-full bg-gradient-to-r from-emerald-500 via-teal-600 to-indigo-700 rounded-3xl p-6 text-white shadow-xl flex flex-col gap-4 animate-fade-in-up">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-3xl">🏆</span>
+                <h3 className="text-2xl font-black">
+                  {isCoopRoomActive && coopPartner
+                    ? coopWinner === 'self'
+                      ? 'Ты победил в гонке текста!'
+                      : coopWinner === 'partner'
+                      ? `Победил ${coopPartner.name}!`
+                      : 'Дружеская ничья!'
+                    : 'Поздравляем! Текст завершён!'}
+                </h3>
+              </div>
+              <p className="text-emerald-100 text-sm">
+                Твой результат: <b className="text-white text-base">{wpm} WPM</b> ({cpm} зн/мин), точность{' '}
+                <b className="text-white text-base">{accuracy}%</b>, время {elapsedSeconds} сек.
+              </p>
             </div>
-            <p className="text-emerald-100 text-sm">
-              Ты напечатал весь рассказ со скоростью <b className="text-white text-base">{wpm} WPM</b> ({cpm} зн/мин) 
-              и точностью <b className="text-white text-base">{accuracy}%</b> за {elapsedSeconds} сек!
-            </p>
+
+            <div className="flex flex-wrap items-center gap-3">
+              {!user && onChangePlayerName && !hasSaved && (
+                <input
+                  type="text"
+                  value={playerName}
+                  onChange={(e) => onChangePlayerName(e.target.value)}
+                  placeholder="Твоё имя для рекорда..."
+                  maxLength={24}
+                  className="px-3 py-2 rounded-xl bg-white/95 text-slate-800 text-xs font-bold placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                />
+              )}
+
+              {isFinished && (
+                <button
+                  type="button"
+                  onClick={handleSaveToLeaderboard}
+                  disabled={hasSaved}
+                  className={`px-4 py-2.5 rounded-2xl font-bold flex items-center gap-2 shadow-lg transition ${
+                    hasSaved
+                      ? 'bg-emerald-700/80 text-white cursor-default'
+                      : 'bg-white text-emerald-800 hover:bg-emerald-50 active:scale-95'
+                  }`}
+                >
+                  <Trophy className="w-5 h-5 text-amber-500" />
+                  <span>{hasSaved ? 'Рекорд в Топ-50!' : 'Сохранить в рекорд'}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  resetTest(targetText, isCoopHost, selectedStoryId);
+                }}
+                className="px-4 py-2.5 bg-emerald-800/60 hover:bg-emerald-800 text-white rounded-2xl font-bold transition flex items-center gap-1.5"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>Ещё раз</span>
+              </button>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            {!user && onChangePlayerName && !hasSaved && (
-              <input
-                type="text"
-                value={playerName}
-                onChange={(e) => onChangePlayerName(e.target.value)}
-                placeholder="Твоё имя для рекорда..."
-                maxLength={24}
-                className="px-3 py-2 rounded-xl bg-white/95 text-slate-800 text-xs font-bold placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-300"
-              />
-            )}
+          {/* Side-by-side Co-op Statistics Comparison */}
+          {isCoopRoomActive && coopPartner && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-white/20">
+              <div className="bg-white/15 rounded-2xl p-3.5 border border-white/20">
+                <div className="text-xs font-black uppercase text-amber-300 mb-1 flex items-center justify-between">
+                  <span>🐱 Твоя статистика</span>
+                  {coopWinner === 'self' && <span className="bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full text-[10px]">🥇 1 место</span>}
+                </div>
+                <div className="grid grid-cols-4 gap-2 text-center mt-2">
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">WPM</div>
+                    <div className="text-base font-mono font-black">{wpm}</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">CPM</div>
+                    <div className="text-base font-mono font-black">{cpm}</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">Точность</div>
+                    <div className="text-base font-mono font-black">{accuracy}%</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">Прогресс</div>
+                    <div className="text-base font-mono font-black">{myProgressPct}%</div>
+                  </div>
+                </div>
+              </div>
 
-            <button
-              type="button"
-              onClick={handleSaveToLeaderboard}
-              disabled={hasSaved}
-              className={`px-4 py-2.5 rounded-2xl font-bold flex items-center gap-2 shadow-lg transition ${
-                hasSaved
-                  ? 'bg-emerald-700/80 text-white cursor-default'
-                  : 'bg-white text-emerald-800 hover:bg-emerald-50 active:scale-95'
-              }`}
-            >
-              <Trophy className="w-5 h-5 text-amber-500" />
-              <span>{hasSaved ? 'Рекорд в Топ-50!' : 'Сохранить в рекорд'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={(e) => {
-                e.currentTarget.blur();
-                resetTest();
-              }}
-              className="px-4 py-2.5 bg-emerald-800/60 hover:bg-emerald-800 text-white rounded-2xl font-bold transition flex items-center gap-1.5"
-            >
-              <RotateCcw className="w-4 h-4" />
-              <span>Ещё раз</span>
-            </button>
-          </div>
+              <div className="bg-white/15 rounded-2xl p-3.5 border border-white/20">
+                <div className="text-xs font-black uppercase text-sky-200 mb-1 flex items-center justify-between">
+                  <span>🐾 Партнёр: {coopPartner.name}</span>
+                  {coopWinner === 'partner' && <span className="bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full text-[10px]">🥇 1 место</span>}
+                </div>
+                <div className="grid grid-cols-4 gap-2 text-center mt-2">
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">WPM</div>
+                    <div className="text-base font-mono font-black">{coopPartner.wpm}</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">CPM</div>
+                    <div className="text-base font-mono font-black">{coopPartner.cpm}</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">Точность</div>
+                    <div className="text-base font-mono font-black">{coopPartner.accuracy}%</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">Прогресс</div>
+                    <div className="text-base font-mono font-black">{coopPartner.progressPercent}%</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -644,8 +942,8 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
                     if (customTextDraft.trim().length > 0) {
                       const sanitized = sanitizeTypingText(customTextDraft);
                       if (sanitized) {
-                        resetTest(sanitized);
                         setSelectedStoryId('custom');
+                        resetTest(sanitized, true, 'custom');
                         setShowCustomModal(false);
                         setCustomTextDraft('');
                       }

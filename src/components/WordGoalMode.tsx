@@ -4,7 +4,8 @@ import {
   RotateCcw, 
   Trophy, 
   Clock, 
-  Volume2
+  Volume2,
+  Crown
 } from 'lucide-react';
 import { WORD_DATABASE, WORD_EMOJIS, formatSyllables } from '../data/words';
 import { VirtualKeyboard } from './VirtualKeyboard';
@@ -17,6 +18,11 @@ import {
 } from '../utils/soundAndEffects';
 import { ScoreRecord } from '../firebase';
 import { User } from 'firebase/auth';
+import {
+  CoopPlayerState,
+  CoopGameConfig,
+  determineCoopWinner
+} from '../utils/mqttCoopRoom';
 
 interface WordGoalModeProps {
   user: User | null;
@@ -32,6 +38,14 @@ interface WordGoalModeProps {
   isRewardMode?: boolean;
   onWordCompleted?: (wordsCount?: number, charLength?: number) => void;
   onMarathonCompleted?: (wpm: number, accuracy: number, wordsCount: number) => void;
+  // Co-op props
+  isCoopRoomActive?: boolean;
+  isCoopHost?: boolean;
+  coopPartner?: CoopPlayerState | null;
+  coopSharedConfig?: CoopGameConfig | null;
+  coopRoundTrigger?: number;
+  onPublishCoopConfig?: (config: Partial<CoopGameConfig>, startRound?: boolean) => void;
+  onUpdateCoopSelfProgress?: (patch: Partial<CoopPlayerState>) => void;
 }
 
 export const WordGoalMode: React.FC<WordGoalModeProps> = ({
@@ -46,7 +60,14 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
   isMobileMode,
   onToggleMobileMode,
   onWordCompleted,
-  onMarathonCompleted
+  onMarathonCompleted,
+  isCoopRoomActive = false,
+  isCoopHost = false,
+  coopPartner = null,
+  coopSharedConfig = null,
+  coopRoundTrigger = 0,
+  onPublishCoopConfig,
+  onUpdateCoopSelfProgress
 }) => {
   const [targetGoal, setTargetGoal] = useState<number>(50);
   const [customGoalInput, setCustomGoalInput] = useState<string>('50');
@@ -57,6 +78,7 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
   const [startTime, setStartTime] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [isFinished, setIsFinished] = useState<boolean>(false);
+  const [finishedAtTime, setFinishedAtTime] = useState<number | undefined>(undefined);
   const [hasSaved, setHasSaved] = useState<boolean>(false);
   const [wpm, setWpm] = useState<number>(0);
   const [cpm, setCpm] = useState<number>(0);
@@ -71,6 +93,7 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
   const errorsCountRef = useRef<number>(0);
   const wordTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastKeydownTimeRef = useRef<number>(0);
+  const appliedConfigIdRef = useRef<string>('');
 
   currentWordIndexRef.current = currentWordIndex;
   typedCharsRef.current = typedChars;
@@ -94,14 +117,18 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     return queue;
   };
 
-  // Start or reset game for a specific goal
-  const startGoalGame = useCallback((goalCount: number) => {
+  // Start or reset game for a specific goal (or shared Co-op queue)
+  const startGoalGame = useCallback((
+    goalCount: number,
+    sharedQueue?: string[],
+    broadcastToCoop: boolean = false
+  ) => {
     if (wordTransitionTimeoutRef.current) {
       clearTimeout(wordTransitionTimeoutRef.current);
       wordTransitionTimeoutRef.current = null;
     }
     const validatedCount = Math.max(3, Math.min(300, goalCount));
-    const newQueue = buildWordQueue(validatedCount);
+    const newQueue = sharedQueue && sharedQueue.length > 0 ? sharedQueue : buildWordQueue(validatedCount);
 
     setTargetGoal(validatedCount);
     setCustomGoalInput(validatedCount.toString());
@@ -115,6 +142,7 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     setStartTime(null);
     setElapsedSeconds(0);
     setIsFinished(false);
+    setFinishedAtTime(undefined);
     setHasSaved(false);
     setWpm(0);
     setCpm(0);
@@ -125,18 +153,77 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-  }, []);
+
+    onUpdateCoopSelfProgress?.({
+      mode: 'word_goal',
+      progressPercent: 0,
+      wordsCompleted: 0,
+      wpm: 0,
+      cpm: 0,
+      accuracy: 100,
+      elapsedSeconds: 0,
+      isFinished: false,
+      finishedAt: undefined
+    });
+
+    if (broadcastToCoop && isCoopRoomActive && isCoopHost) {
+      onPublishCoopConfig?.(
+        {
+          mode: 'word_goal',
+          marathonTargetGoal: validatedCount,
+          marathonWordsQueue: newQueue
+        },
+        true
+      );
+    }
+  }, [isCoopRoomActive, isCoopHost, onPublishCoopConfig, onUpdateCoopSelfProgress]);
 
   // Initialize once on mount with 50 words
   useEffect(() => {
-    startGoalGame(50);
+    startGoalGame(50, undefined, false);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (wordTransitionTimeoutRef.current) clearTimeout(wordTransitionTimeoutRef.current);
     };
-  }, [startGoalGame]);
+  }, []);
 
-  // Smooth, uninterrupted live timer that does NOT reset on each word index change
+  // Sync when Co-op shared config updates (Guest round start)
+  useEffect(() => {
+    if (!isCoopRoomActive || isCoopHost || !coopSharedConfig || coopSharedConfig.mode !== 'word_goal') return;
+    if (coopSharedConfig.configId && coopSharedConfig.configId !== appliedConfigIdRef.current) {
+      appliedConfigIdRef.current = coopSharedConfig.configId;
+      if (coopSharedConfig.marathonTargetGoal && coopSharedConfig.marathonWordsQueue) {
+        startGoalGame(coopSharedConfig.marathonTargetGoal, coopSharedConfig.marathonWordsQueue, false);
+      }
+    }
+  }, [isCoopRoomActive, isCoopHost, coopSharedConfig, startGoalGame]);
+
+  // Also reset round when Host clicks "Начать игру" in CoopBar
+  useEffect(() => {
+    if (coopRoundTrigger > 0 && isCoopRoomActive) {
+      if (isCoopHost) {
+        startGoalGame(targetGoal, undefined, true);
+      } else if (coopSharedConfig?.marathonTargetGoal && coopSharedConfig?.marathonWordsQueue) {
+        startGoalGame(coopSharedConfig.marathonTargetGoal, coopSharedConfig.marathonWordsQueue, false);
+      }
+    }
+  }, [coopRoundTrigger]);
+
+  // Publish initial host config when entering WordGoalMode as Host
+  useEffect(() => {
+    if (isCoopRoomActive && isCoopHost && wordsQueue.length > 0) {
+      onPublishCoopConfig?.(
+        {
+          mode: 'word_goal',
+          marathonTargetGoal: targetGoal,
+          marathonWordsQueue: wordsQueue
+        },
+        false
+      );
+    }
+  }, [isCoopRoomActive, isCoopHost]);
+
+  // Smooth, uninterrupted live timer
   useEffect(() => {
     if (startTime && !isFinished) {
       const updateTimer = () => {
@@ -146,6 +233,16 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
         const wordsFinished = currentWordIndexRef.current;
         const currentWpm = Math.round((wordsFinished / seconds) * 60);
         setWpm(currentWpm);
+
+        const pct = Math.min(100, Math.round((wordsFinished / Math.max(1, targetGoal)) * 100));
+        onUpdateCoopSelfProgress?.({
+          mode: 'word_goal',
+          progressPercent: pct,
+          wordsCompleted: wordsFinished,
+          wpm: currentWpm,
+          elapsedSeconds: seconds,
+          isFinished: false
+        });
       };
 
       updateTimer();
@@ -154,7 +251,7 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [startTime, isFinished]);
+  }, [startTime, isFinished, targetGoal, onUpdateCoopSelfProgress]);
 
   const currentWord = wordsQueue[currentWordIndex] || '';
 
@@ -170,10 +267,12 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
 
   // Handle completion
   const handleFinished = useCallback((finalErrors: number) => {
+    const finishNow = Date.now();
     setIsFinished(true);
+    setFinishedAtTime(finishNow);
     if (timerRef.current) clearInterval(timerRef.current);
 
-    const duration = startTime ? Math.max(1, Math.round((Date.now() - startTime) / 1000)) : 1;
+    const duration = startTime ? Math.max(1, Math.round((finishNow - startTime) / 1000)) : 1;
     const finalWpm = Math.round((targetGoal / duration) * 60);
 
     const totalChars = wordsQueue.reduce((acc, w) => acc + w.length, 0);
@@ -186,13 +285,25 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     setCpm(finalCpm);
     setAccuracy(finalAcc);
 
+    onUpdateCoopSelfProgress?.({
+      mode: 'word_goal',
+      progressPercent: 100,
+      wordsCompleted: targetGoal,
+      wpm: finalWpm,
+      cpm: finalCpm,
+      accuracy: finalAcc,
+      elapsedSeconds: duration,
+      isFinished: true,
+      finishedAt: finishNow
+    });
+
     if (soundEnabled) playSuccessFanfare();
     launchConfetti();
 
     const earnedXp = Math.round(targetGoal * 3 + finalWpm);
     onAddXp(earnedXp);
     onMarathonCompleted?.(finalWpm, finalAcc, targetGoal);
-  }, [startTime, targetGoal, wordsQueue, soundEnabled, onAddXp, onMarathonCompleted]);
+  }, [startTime, targetGoal, wordsQueue, soundEnabled, onAddXp, onMarathonCompleted, onUpdateCoopSelfProgress]);
 
   // Advance to next word
   const nextWord = useCallback(() => {
@@ -205,8 +316,15 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
       typedCharsRef.current = '';
       setTypedChars('');
       setHintKey(null);
+
+      const pct = Math.min(100, Math.round((nextIdx / Math.max(1, targetGoal)) * 100));
+      onUpdateCoopSelfProgress?.({
+        mode: 'word_goal',
+        progressPercent: pct,
+        wordsCompleted: nextIdx
+      });
     }
-  }, [targetGoal, handleFinished]);
+  }, [targetGoal, handleFinished, onUpdateCoopSelfProgress]);
 
   // Handle character input
   const handleCharInput = useCallback((char: string) => {
@@ -247,7 +365,6 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
   // Physical keyboard listener: strictly block Enter and Space from triggering focused buttons!
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Allow typing inside the custom number input or guest name input
       const activeEl = document.activeElement;
       if (
         activeEl &&
@@ -259,11 +376,10 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
 
       if (e.key === 'Escape') {
         e.preventDefault();
-        startGoalGame(targetGoal);
+        startGoalGame(targetGoal, undefined, isCoopHost);
         return;
       }
 
-      // CRITICAL FIX: Never let Enter or Space click a focused goal button ("10 слов", "Сначала", etc.)
       if (e.key === 'Enter') {
         e.preventDefault();
         e.stopPropagation();
@@ -293,7 +409,7 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-  }, [handleCharInput, startGoalGame, targetGoal, currentWord]);
+  }, [handleCharInput, startGoalGame, targetGoal, currentWord, isCoopHost]);
 
   // Tablet / Android Chrome IME fallback input handler
   const handleTabletInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -333,13 +449,40 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     customInputRef.current?.blur();
     const parsed = parseInt(customGoalInput, 10);
     if (!isNaN(parsed) && parsed >= 3 && parsed <= 300) {
-      startGoalGame(parsed);
+      startGoalGame(parsed, undefined, true);
     }
   };
 
-  const progressPercent = Math.min(100, Math.round((currentWordIndex / targetGoal) * 100));
+  const myWordsDone = isFinished ? targetGoal : currentWordIndex;
+  const progressPercent = Math.min(100, Math.round((myWordsDone / Math.max(1, targetGoal)) * 100));
+  const partnerWordsDone = coopPartner?.wordsCompleted ?? 0;
+  const partnerProgressPercent = Math.min(100, Math.round((partnerWordsDone / Math.max(1, targetGoal)) * 100));
+
   const expectedChar = !isFinished && currentWord ? currentWord[typedChars.length] : undefined;
   const currentEmoji = WORD_EMOJIS[currentWord] || '🐾';
+  const canChangeSettings = !isCoopRoomActive || isCoopHost;
+
+  const selfStateForWinner: CoopPlayerState = {
+    playerId: 'self',
+    name: playerName || user?.displayName || 'Ты',
+    isHost: isCoopHost,
+    color: 'orange',
+    mode: 'word_goal',
+    progressPercent,
+    wordsCompleted: myWordsDone,
+    lettersMastered: 0,
+    wpm,
+    cpm,
+    accuracy,
+    elapsedSeconds,
+    isFinished,
+    finishedAt: finishedAtTime,
+    sessionWordsTotal: 0,
+    rewardSecondsTotal: 0,
+    updatedAt: Date.now()
+  };
+
+  const coopWinner = isCoopRoomActive ? determineCoopWinner(selfStateForWinner, coopPartner) : null;
 
   return (
     <div translate="no" className="notranslate w-full max-w-5xl flex flex-col items-center gap-3">
@@ -370,9 +513,10 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
             <button
               key={count}
               type="button"
+              disabled={!canChangeSettings}
               onClick={(e) => {
                 e.currentTarget.blur();
-                startGoalGame(count);
+                startGoalGame(count, undefined, true);
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
@@ -380,7 +524,7 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
                   e.stopPropagation();
                 }
               }}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 border ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 border disabled:opacity-60 ${
                 targetGoal === count
                   ? 'bg-emerald-600 text-white border-emerald-700 shadow-sm'
                   : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
@@ -391,41 +535,48 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
           ))}
 
           {/* Any custom number input */}
-          <div className="flex items-center gap-1.5 ml-2 bg-slate-50 p-1 rounded-xl border border-slate-200">
-            <span className="text-[11px] font-bold text-slate-500 ml-1">Своё число:</span>
-            <input
-              ref={customInputRef}
-              type="number"
-              min={3}
-              max={300}
-              value={customGoalInput}
-              onChange={(e) => setCustomGoalInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleApplyCustomGoal();
-                }
-              }}
-              className="w-16 border border-slate-300 rounded-lg px-2 py-1 text-xs text-center font-bold bg-white focus:outline-none focus:border-emerald-500"
-            />
-            <button
-              type="button"
-              onClick={handleApplyCustomGoal}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
-              }}
-              className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition"
-            >
-              Задать
-            </button>
-          </div>
+          {canChangeSettings ? (
+            <div className="flex items-center gap-1.5 ml-2 bg-slate-50 p-1 rounded-xl border border-slate-200">
+              <span className="text-[11px] font-bold text-slate-500 ml-1">Своё число:</span>
+              <input
+                ref={customInputRef}
+                type="number"
+                min={3}
+                max={300}
+                value={customGoalInput}
+                onChange={(e) => setCustomGoalInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleApplyCustomGoal();
+                  }
+                }}
+                className="w-16 border border-slate-300 rounded-lg px-2 py-1 text-xs text-center font-bold bg-white focus:outline-none focus:border-emerald-500"
+              />
+              <button
+                type="button"
+                onClick={handleApplyCustomGoal}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+                }}
+                className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition"
+              >
+                Задать
+              </button>
+            </div>
+          ) : (
+            <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2.5 py-1 rounded-xl flex items-center gap-1">
+              <Crown className="w-3.5 h-3.5 text-amber-500" />
+              Дистанцию ({targetGoal} слов) задаёт создатель комнаты
+            </span>
+          )}
         </div>
 
         <button
           type="button"
           onClick={(e) => {
             e.currentTarget.blur();
-            startGoalGame(targetGoal);
+            startGoalGame(targetGoal, isCoopHost ? undefined : wordsQueue, isCoopHost);
           }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
@@ -441,12 +592,23 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
         </button>
       </div>
 
-      {/* Progress Track: The Cat walks towards treats */}
-      <div className="w-full bg-white rounded-2xl p-4 shadow-sm border border-slate-200">
-        <div className="flex justify-between items-center text-xs font-bold text-slate-500 mb-2">
-          <span key={`goal-${targetGoal}-${currentWordIndex}`} className="flex items-center gap-1">
-            <span className="text-emerald-600 text-base font-black">{currentWordIndex}</span> / <span>{targetGoal}</span> слов напечатано
+      {/* Progress Track: 2 Cats of different colors move towards the Trophy in Co-op! */}
+      <div className="w-full bg-white rounded-2xl p-4 shadow-sm border border-slate-200 flex flex-col gap-2.5">
+        <div className="flex justify-between items-center text-xs font-bold text-slate-500 flex-wrap gap-2">
+          <span key={`goal-${targetGoal}-${myWordsDone}`} className="flex items-center gap-1">
+            <span className="text-emerald-600 text-base font-black">{myWordsDone}</span> / <span>{targetGoal}</span> слов напечатано
           </span>
+
+          {isCoopRoomActive && coopPartner && (
+            <span className="bg-amber-100 text-amber-900 border border-amber-300 px-3 py-0.5 rounded-full font-extrabold">
+              {myWordsDone > partnerWordsDone
+                ? `🥇 Идёт первым: Ты (${myWordsDone} из ${targetGoal})`
+                : partnerWordsDone > myWordsDone
+                ? `🥇 Идёт первым: ${coopPartner.name} (${partnerWordsDone} из ${targetGoal})`
+                : `⚡ Бежите ноздря в ноздрю (${myWordsDone} из ${targetGoal})`}
+            </span>
+          )}
+
           <span className="flex items-center gap-1 font-mono text-amber-600">
             <Clock className="w-3.5 h-3.5" />
             {Math.floor(elapsedSeconds / 60)}:
@@ -454,25 +616,62 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
           </span>
         </div>
 
-        <div className="relative w-full h-8 bg-slate-100 rounded-full overflow-hidden p-1 border border-slate-200 flex items-center">
-          <div
-            className="h-full bg-gradient-to-r from-emerald-400 via-teal-400 to-emerald-500 rounded-full transition-all duration-300 shadow-sm"
-            style={{ width: `${progressPercent}%` }}
-          />
+        {/* Lane 1: Player's Orange Cat on Emerald Track */}
+        <div className="flex items-center gap-2">
+          {isCoopRoomActive && (
+            <span className="w-24 truncate text-xs font-black text-orange-600">
+              🟠 Ты ({myWordsDone})
+            </span>
+          )}
+          <div className="relative flex-1 h-8 bg-slate-100 rounded-full overflow-hidden p-1 border border-slate-200 flex items-center">
+            <div
+              className="h-full bg-gradient-to-r from-amber-400 via-orange-400 to-emerald-500 rounded-full transition-all duration-300 shadow-sm"
+              style={{ width: `${progressPercent}%` }}
+            />
 
-          {/* Running Cat marker */}
-          <div
-            className="absolute top-1/2 -translate-y-1/2 transition-all duration-300 select-none text-xl"
-            style={{ left: `clamp(4px, calc(${progressPercent}% - 14px), calc(100% - 36px))` }}
-          >
-            🐱
-          </div>
+            {/* Running Orange Cat marker */}
+            <div
+              className="absolute top-1/2 -translate-y-1/2 transition-all duration-300 select-none text-xl"
+              style={{ left: `clamp(4px, calc(${progressPercent}% - 14px), calc(100% - 36px))` }}
+            >
+              🐱
+            </div>
 
-          {/* Golden Goal marker */}
-          <div className="absolute right-2 top-1/2 -translate-y-1/2 text-base select-none">
-            🏆
+            {/* Golden Goal Trophy */}
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 text-base select-none">
+              🏆
+            </div>
           </div>
         </div>
+
+        {/* Lane 2 (Co-op): Partner's Blue Cat on Sky/Indigo Track */}
+        {isCoopRoomActive && (
+          <div className="flex items-center gap-2">
+            <span className="w-24 truncate text-xs font-black text-indigo-600">
+              🔵 {coopPartner ? `${coopPartner.name} (${partnerWordsDone})` : 'Друг...'}
+            </span>
+            <div className="relative flex-1 h-8 bg-indigo-50/70 rounded-full overflow-hidden p-1 border border-indigo-200 flex items-center">
+              <div
+                className="h-full bg-gradient-to-r from-sky-400 via-blue-500 to-indigo-600 rounded-full transition-all duration-300 shadow-sm"
+                style={{ width: `${partnerProgressPercent}%` }}
+              />
+
+              {/* Running Blue/Purple Cat marker */}
+              <div
+                className="absolute top-1/2 -translate-y-1/2 transition-all duration-300 select-none text-xl"
+                style={{ left: `clamp(4px, calc(${partnerProgressPercent}% - 14px), calc(100% - 36px))` }}
+                style-filter="hue-rotate(190deg)"
+              >
+                🐾
+              </div>
+
+              {/* Golden Goal Trophy */}
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 text-base select-none">
+                🏆
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Current Word Arena */}
@@ -532,62 +731,127 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
         </div>
       )}
 
-      {/* Completion Trophy Card */}
-      {isFinished && (
-        <div className="w-full bg-gradient-to-r from-emerald-600 to-teal-700 rounded-3xl p-6 text-white shadow-xl flex flex-col md:flex-row items-center justify-between gap-5 animate-fade-in-up">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-4xl">🏆</span>
-              <h3 className="text-2xl font-black">Марафон {targetGoal} слов завершён!</h3>
+      {/* Completion Trophy Card (with Co-op Winner & Side-by-Side Comparison) */}
+      {(isFinished || (isCoopRoomActive && coopPartner?.isFinished)) && (
+        <div className="w-full bg-gradient-to-r from-emerald-600 via-teal-700 to-indigo-700 rounded-3xl p-6 text-white shadow-xl flex flex-col gap-4 animate-fade-in-up">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-5">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-4xl">🏆</span>
+                <h3 className="text-2xl font-black">
+                  {isCoopRoomActive && coopPartner
+                    ? coopWinner === 'self'
+                      ? 'Ты первым прибежал к кубку!'
+                      : coopWinner === 'partner'
+                      ? `${coopPartner.name} первым прибежал к кубку!`
+                      : 'Оба котика прибежали одновременно!'
+                    : `Марафон ${targetGoal} слов завершён!`}
+                </h3>
+              </div>
+              <p className="text-emerald-100 text-sm mt-1">
+                Твой результат: <b className="text-white text-lg">{wpm} WPM</b> ({cpm} зн/мин), время:{' '}
+                <b className="text-white text-lg">
+                  {Math.floor(elapsedSeconds / 60)}м {elapsedSeconds % 60}с
+                </b>
+                , точность: <b className="text-white text-lg">{accuracy}%</b>.
+              </p>
             </div>
-            <p className="text-emerald-100 text-sm mt-1">
-              Ты преодолел всю дистанцию! Твоя скорость:{' '}
-              <b className="text-white text-lg">{wpm} WPM</b> ({cpm} зн/мин), время:{' '}
-              <b className="text-white text-lg">
-                {Math.floor(elapsedSeconds / 60)}м {elapsedSeconds % 60}с
-              </b>
-              , точность: <b className="text-white text-lg">{accuracy}%</b>.
-            </p>
+
+            <div className="flex flex-wrap items-center gap-3">
+              {!user && onChangePlayerName && !hasSaved && (
+                <input
+                  type="text"
+                  value={playerName}
+                  onChange={(e) => onChangePlayerName(e.target.value)}
+                  placeholder="Твоё имя для рекорда..."
+                  maxLength={24}
+                  className="px-3 py-2 rounded-xl bg-white/95 text-slate-800 text-xs font-bold placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                />
+              )}
+
+              {isFinished && (
+                <button
+                  type="button"
+                  onClick={handleSaveToLeaderboard}
+                  disabled={hasSaved}
+                  className={`px-5 py-3 rounded-2xl font-bold flex items-center gap-2 shadow-lg transition ${
+                    hasSaved
+                      ? 'bg-emerald-800 text-white cursor-default'
+                      : 'bg-white text-emerald-900 hover:bg-emerald-50 active:scale-95'
+                  }`}
+                >
+                  <Trophy className="w-5 h-5 text-amber-500" />
+                  <span>{hasSaved ? 'Рекорд в Топ-50!' : 'Сохранить рекорд'}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  startGoalGame(targetGoal, undefined, isCoopHost);
+                }}
+                className="px-4 py-3 bg-emerald-800/60 hover:bg-emerald-800 text-white rounded-2xl font-bold transition flex items-center gap-1.5"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>Новый забег</span>
+              </button>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            {!user && onChangePlayerName && !hasSaved && (
-              <input
-                type="text"
-                value={playerName}
-                onChange={(e) => onChangePlayerName(e.target.value)}
-                placeholder="Твоё имя для рекорда..."
-                maxLength={24}
-                className="px-3 py-2 rounded-xl bg-white/95 text-slate-800 text-xs font-bold placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-300"
-              />
-            )}
+          {isCoopRoomActive && coopPartner && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-white/20">
+              <div className="bg-white/15 rounded-2xl p-3.5 border border-white/20">
+                <div className="text-xs font-black uppercase text-amber-300 mb-1 flex items-center justify-between">
+                  <span>🟠 Твой котик</span>
+                  {coopWinner === 'self' && <span className="bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full text-[10px]">🥇 Победитель</span>}
+                </div>
+                <div className="grid grid-cols-4 gap-2 text-center mt-2">
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">Слов</div>
+                    <div className="text-base font-mono font-black">{myWordsDone}/{targetGoal}</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">WPM</div>
+                    <div className="text-base font-mono font-black">{wpm}</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">Точность</div>
+                    <div className="text-base font-mono font-black">{accuracy}%</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">Время</div>
+                    <div className="text-base font-mono font-black">{elapsedSeconds}с</div>
+                  </div>
+                </div>
+              </div>
 
-            <button
-              type="button"
-              onClick={handleSaveToLeaderboard}
-              disabled={hasSaved}
-              className={`px-5 py-3 rounded-2xl font-bold flex items-center gap-2 shadow-lg transition ${
-                hasSaved
-                  ? 'bg-emerald-800 text-white cursor-default'
-                  : 'bg-white text-emerald-900 hover:bg-emerald-50 active:scale-95'
-              }`}
-            >
-              <Trophy className="w-5 h-5 text-amber-500" />
-              <span>{hasSaved ? 'Рекорд в Топ-50!' : 'Сохранить рекорд'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={(e) => {
-                e.currentTarget.blur();
-                startGoalGame(targetGoal);
-              }}
-              className="px-4 py-3 bg-emerald-800/60 hover:bg-emerald-800 text-white rounded-2xl font-bold transition flex items-center gap-1.5"
-            >
-              <RotateCcw className="w-4 h-4" />
-              <span>Новый забег</span>
-            </button>
-          </div>
+              <div className="bg-white/15 rounded-2xl p-3.5 border border-white/20">
+                <div className="text-xs font-black uppercase text-sky-200 mb-1 flex items-center justify-between">
+                  <span>🔵 Котик друга: {coopPartner.name}</span>
+                  {coopWinner === 'partner' && <span className="bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full text-[10px]">🥇 Победитель</span>}
+                </div>
+                <div className="grid grid-cols-4 gap-2 text-center mt-2">
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">Слов</div>
+                    <div className="text-base font-mono font-black">{coopPartner.wordsCompleted}/{targetGoal}</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">WPM</div>
+                    <div className="text-base font-mono font-black">{coopPartner.wpm}</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">Точность</div>
+                    <div className="text-base font-mono font-black">{coopPartner.accuracy}%</div>
+                  </div>
+                  <div className="bg-black/20 rounded-xl p-2">
+                    <div className="text-[10px] text-white/70">Время</div>
+                    <div className="text-base font-mono font-black">{coopPartner.elapsedSeconds}с</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

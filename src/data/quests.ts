@@ -1,4 +1,5 @@
 import { AchievementItem, CatLevel, PetStats, QuestProgressCounters } from '../types';
+import { RUSSIAN_ALPHABET } from './words';
 
 export const CAT_STAGE_THRESHOLDS: { level: CatLevel; requiredXp: number; name: string; icon: string }[] = [
   { level: 'baby', requiredXp: 0, name: 'Малыш', icon: '🍼' },
@@ -90,7 +91,36 @@ export function createInitialQuestCounters(todayStr: string): QuestProgressCount
     maxWpm: 0,
     highAccuracyTexts: 0,
     recordsSaved: 0,
+    learnedAlphabetLetters: '',
   };
+}
+
+export function parseLearnedAlphabetLetters(raw?: string): string[] {
+  if (!raw || typeof raw !== 'string') return [];
+  const validSet = new Set(RUSSIAN_ALPHABET);
+  return Array.from(
+    new Set(
+      raw
+        .split(',')
+        .map(s => s.trim().toUpperCase())
+        .filter(s => validSet.has(s))
+    )
+  );
+}
+
+export function addLearnedAlphabetLetter(raw: string | undefined, letter: string): string {
+  const current = parseLearnedAlphabetLetters(raw);
+  const upper = letter.trim().toUpperCase();
+  if (!current.includes(upper) && RUSSIAN_ALPHABET.includes(upper)) {
+    current.push(upper);
+  }
+  return current.join(',');
+}
+
+export function mergeLearnedAlphabetLetters(rawA?: string, rawB?: string): string {
+  const listA = parseLearnedAlphabetLetters(rawA);
+  const listB = parseLearnedAlphabetLetters(rawB);
+  return Array.from(new Set([...listA, ...listB])).join(',');
 }
 
 export interface QuestTemplate {
@@ -225,8 +255,39 @@ export function getDailyQuestsForDate(dateStr: string): QuestTemplate[] {
   return [...coreFour, rotatingPool[idx1], rotatingPool[idx2]];
 }
 
-// 30 Long-term challenging quests ("30 сложных заданий") with rich XP rewards
+// Long-term challenging quests (включая изучение 10 букв алфавита и всего алфавита)
 export const LONG_TERM_QUEST_TEMPLATES: QuestTemplate[] = [
+  {
+    id: 'lt_alphabet_10',
+    title: 'Выучи 10 букв по алфавиту',
+    description: 'Освой 10 разных букв по алфавиту в режиме «Буквенный спринт»',
+    icon: '🔤',
+    xpReward: 200,
+    category: 'longterm',
+    targetProgress: 10,
+    getProgress: ({ counters }) =>
+      Math.min(
+        10,
+        Math.max(
+          parseLearnedAlphabetLetters(counters.learnedAlphabetLetters).length,
+          Math.min(10, counters.totalSprintLetters)
+        )
+      ),
+  },
+  {
+    id: 'lt_alphabet_all',
+    title: 'Выучи весь алфавит',
+    description: `Освой все ${RUSSIAN_ALPHABET.length} буквы русского алфавита от А до Я в «Буквенном спринте»!`,
+    icon: '📚',
+    xpReward: 500,
+    category: 'longterm',
+    targetProgress: RUSSIAN_ALPHABET.length,
+    getProgress: ({ counters }) =>
+      Math.min(
+        RUSSIAN_ALPHABET.length,
+        parseLearnedAlphabetLetters(counters.learnedAlphabetLetters).length
+      ),
+  },
   {
     id: 'lt_words_50',
     title: '1. Первые полсотни слов',

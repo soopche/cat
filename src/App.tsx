@@ -15,8 +15,12 @@ import {
   LetterSprintMode 
 } from './components/LetterSprintMode';
 import { 
-  CatChatMode 
+  CatChatMode,
+  CoopChatMessageItem
 } from './components/CatChatMode';
+import {
+  CoopBar
+} from './components/CoopBar';
 import { 
   LeaderboardModal 
 } from './components/LeaderboardModal';
@@ -51,6 +55,7 @@ import {
 } from 'firebase/auth';
 import { 
   playAlarmBeep, 
+  playCorrectBeep,
   playSuccessFanfare, 
   launchBigCelebration,
   speakRussianText
@@ -60,8 +65,21 @@ import {
   getTodayLocalDateString,
   createInitialQuestCounters,
   evaluateAllQuests,
-  CAT_STAGE_THRESHOLDS
+  CAT_STAGE_THRESHOLDS,
+  parseLearnedAlphabetLetters,
+  addLearnedAlphabetLetter,
+  mergeLearnedAlphabetLetters
 } from './data/quests';
+import {
+  MqttCoopRoomManager,
+  CoopPlayerState,
+  CoopGameConfig,
+  CoopRoomEvent,
+  CoopActiveMode,
+  generateTwoDigitRoomCode,
+  getOrCreateSessionPlayerId,
+  findOrCreateRandomRoom
+} from './utils/mqttCoopRoom';
 import { Play, Pause, StopCircle } from 'lucide-react';
 
 const LOCAL_SAVE_KEY = 'typecat_save_v32';
@@ -182,6 +200,7 @@ function loadInitialLocalSave(): InitialLocalSave {
       maxWpm: Number(savedCounters.maxWpm || 0),
       highAccuracyTexts: Number(savedCounters.highAccuracyTexts || 0),
       recordsSaved: Number(savedCounters.recordsSaved || (Array.isArray(parsed.localRecords) ? parsed.localRecords.length : 0)),
+      learnedAlphabetLetters: typeof savedCounters.learnedAlphabetLetters === 'string' ? savedCounters.learnedAlphabetLetters : '',
     };
 
     // Check if user entered today or on a different day:
@@ -268,6 +287,29 @@ export default function App() {
   const [sessionWordCount, setSessionWordCount] = useState<number>(0);
   const [isRewardTimerActive, setIsRewardTimerActive] = useState<boolean>(false);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
+
+  // Lazy MQTT Co-op Multiplayer State (100% idle until user clicks "Кооператив")
+  const selfPlayerId = useMemo(() => getOrCreateSessionPlayerId(), []);
+  const [isCoopOpen, setIsCoopOpen] = useState<boolean>(false);
+  const [coopRoomCode, setCoopRoomCode] = useState<string | null>(null);
+  const [isCoopHost, setIsCoopHost] = useState<boolean>(false);
+  const [coopConnectionStatus, setCoopConnectionStatus] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
+  const [isMatchmaking, setIsMatchmaking] = useState<boolean>(false);
+  const [coopPlayers, setCoopPlayers] = useState<CoopPlayerState[]>([]);
+  const [coopSharedConfig, setCoopSharedConfig] = useState<CoopGameConfig | null>(null);
+  const [coopRoundTrigger, setCoopRoundTrigger] = useState<number>(0);
+  const [coopChatMessages, setCoopChatMessages] = useState<CoopChatMessageItem[]>([]);
+  const [coopSessionWords, setCoopSessionWords] = useState<number>(0);
+  const [coopSessionRewardSec, setCoopSessionRewardSec] = useState<number>(0);
+
+  const roomManagerRef = useRef<MqttCoopRoomManager | null>(null);
+  const matchmakingCleanupRef = useRef<(() => void) | null>(null);
+  const isCoopHostRef = useRef<boolean>(false);
+  isCoopHostRef.current = isCoopHost;
+  const coopSharedConfigRef = useRef<CoopGameConfig | null>(null);
+  coopSharedConfigRef.current = coopSharedConfig;
+  const soundEnabledRef = useRef<boolean>(soundEnabled);
+  soundEnabledRef.current = soundEnabled;
 
   // Modals
   const [showLeaderboard, setShowLeaderboard] = useState<boolean>(false);
@@ -434,6 +476,10 @@ export default function App() {
             maxWpm: Math.max(snap.questCounters.maxWpm, Number(cc.maxWpm || 0)),
             highAccuracyTexts: Math.max(snap.questCounters.highAccuracyTexts, Number(cc.highAccuracyTexts || 0)),
             recordsSaved: Math.max(snap.questCounters.recordsSaved, Number(cc.recordsSaved || 0)),
+            learnedAlphabetLetters: mergeLearnedAlphabetLetters(
+              snap.questCounters.learnedAlphabetLetters,
+              typeof cc.learnedAlphabetLetters === 'string' ? cc.learnedAlphabetLetters : ''
+            ),
           };
 
           setXp(mergedXp);
@@ -821,13 +867,310 @@ export default function App() {
       };
     });
 
+    const secPerWord = (charLength && charLength >= 6) ? 15 : 12;
+    const earnedSeconds = secPerWord * wordsCount;
+
     if (isRewardMode) {
       setSessionWordCount(c => c + wordsCount);
-      const secPerWord = (charLength && charLength >= 6) ? 15 : 12;
-      const earnedSeconds = secPerWord * wordsCount;
       setRewardSeconds(s => s + earnedSeconds);
     }
+
+    // Also update Co-op session counters & publish to partner if in an active room
+    setCoopSessionWords(prevWords => {
+      const nextWords = prevWords + wordsCount;
+      setCoopSessionRewardSec(prevSec => {
+        const nextSec = prevSec + earnedSeconds;
+        if (roomManagerRef.current) {
+          roomManagerRef.current.updateSelfState({
+            sessionWordsTotal: nextWords,
+            rewardSecondsTotal: nextSec,
+          });
+        }
+        return nextSec;
+      });
+      return nextWords;
+    });
   }, [isRewardMode]);
+
+  // Clean up Co-op room on component unmount
+  useEffect(() => {
+    return () => {
+      if (matchmakingCleanupRef.current) {
+        matchmakingCleanupRef.current();
+        matchmakingCleanupRef.current = null;
+      }
+      if (roomManagerRef.current) {
+        roomManagerRef.current.publishLeaveAndDisconnect();
+        roomManagerRef.current = null;
+      }
+    };
+  }, []);
+
+  // Keep player display name synced into active Co-op room
+  useEffect(() => {
+    if (roomManagerRef.current) {
+      const effectiveName =
+        playerName.trim() || user?.displayName || (isCoopHost ? 'Хост-Котик' : 'Друг-Котик');
+      roomManagerRef.current.updateSelfState({ name: effectiveName });
+    }
+  }, [playerName, user, isCoopHost]);
+
+  const handleLeaveCoopRoom = useCallback(() => {
+    if (matchmakingCleanupRef.current) {
+      matchmakingCleanupRef.current();
+      matchmakingCleanupRef.current = null;
+    }
+    if (roomManagerRef.current) {
+      roomManagerRef.current.publishLeaveAndDisconnect();
+      roomManagerRef.current = null;
+    }
+    setIsMatchmaking(false);
+    setCoopRoomCode(null);
+    setIsCoopHost(false);
+    setCoopConnectionStatus('idle');
+    setCoopPlayers([]);
+    setCoopSharedConfig(null);
+  }, []);
+
+  const joinOrCreateCoopRoom = useCallback((code: string, asHost: boolean) => {
+    if (matchmakingCleanupRef.current) {
+      matchmakingCleanupRef.current();
+      matchmakingCleanupRef.current = null;
+    }
+    if (roomManagerRef.current) {
+      roomManagerRef.current.publishLeaveAndDisconnect();
+      roomManagerRef.current = null;
+    }
+
+    setIsMatchmaking(false);
+    setCoopRoomCode(code);
+    setIsCoopHost(asHost);
+    isCoopHostRef.current = asHost;
+    setCoopConnectionStatus('connecting');
+    setCoopChatMessages([]);
+
+    // Co-op works in all tabs except classic_pet; switch to speed_text if currently on classic_pet
+    const activeCoopMode: CoopActiveMode =
+      currentMode === 'classic_pet' ? 'speed_text' : currentMode;
+    if (currentMode === 'classic_pet') {
+      setCurrentMode('speed_text');
+    }
+
+    const effectiveName =
+      playerName.trim() || user?.displayName || (asHost ? 'Хост-Котик' : 'Друг-Котик');
+
+    const initialSelfState: CoopPlayerState = {
+      playerId: selfPlayerId,
+      name: effectiveName,
+      isHost: asHost,
+      color: asHost ? 'orange' : 'blue',
+      mode: activeCoopMode,
+      progressPercent: 0,
+      wordsCompleted: 0,
+      lettersMastered: 0,
+      wpm: 0,
+      cpm: 0,
+      accuracy: 100,
+      elapsedSeconds: 0,
+      isFinished: false,
+      sessionWordsTotal: coopSessionWords,
+      rewardSecondsTotal: isRewardMode ? rewardSeconds : coopSessionRewardSec,
+      updatedAt: Date.now(),
+    };
+
+    setCoopPlayers([initialSelfState]);
+
+    const manager = new MqttCoopRoomManager(code, initialSelfState, {
+      onPlayersChange: (playersList) => {
+        setCoopPlayers(playersList);
+      },
+      onConnectionChange: (status) => {
+        setCoopConnectionStatus(status);
+      },
+      onEvent: (ev: CoopRoomEvent) => {
+        if (ev.type === 'sync_config' || ev.type === 'start_round') {
+          setCoopSharedConfig(ev.config);
+          coopSharedConfigRef.current = ev.config;
+          if (ev.config.mode) {
+            setCurrentMode(ev.config.mode);
+            manager.updateSelfState({ mode: ev.config.mode });
+          }
+          if (ev.type === 'start_round') {
+            setCoopRoundTrigger(t => t + 1);
+          }
+        } else if (ev.type === 'request_config') {
+          if (isCoopHostRef.current && coopSharedConfigRef.current) {
+            manager.publishEvent({
+              type: 'sync_config',
+              senderId: selfPlayerId,
+              config: coopSharedConfigRef.current,
+              timestamp: Date.now(),
+            });
+          }
+        } else if (ev.type === 'chat_message') {
+          setCoopChatMessages(prev => {
+            if (prev.some(m => m.id === ev.messageId)) return prev;
+            return [
+              ...prev,
+              {
+                id: ev.messageId,
+                senderId: ev.senderId,
+                senderName: ev.senderName,
+                text: ev.text,
+                timestamp: ev.timestamp,
+              },
+            ];
+          });
+          if (soundEnabledRef.current) {
+            playCorrectBeep();
+          }
+        }
+      },
+    });
+
+    roomManagerRef.current = manager;
+    manager.start();
+  }, [
+    currentMode,
+    playerName,
+    user,
+    selfPlayerId,
+    coopSessionWords,
+    isRewardMode,
+    rewardSeconds,
+    coopSessionRewardSec,
+  ]);
+
+  const handleCreateCoopRoom = useCallback(() => {
+    const newCode = generateTwoDigitRoomCode();
+    joinOrCreateCoopRoom(newCode, true);
+  }, [joinOrCreateCoopRoom]);
+
+  const handleJoinCoopRoom = useCallback((code: string) => {
+    joinOrCreateCoopRoom(code.trim(), false);
+  }, [joinOrCreateCoopRoom]);
+
+  const handleFindRandomCoopPlayer = useCallback(() => {
+    if (isMatchmaking) return;
+    setIsMatchmaking(true);
+    const effectiveName = playerName.trim() || user?.displayName || 'Котик-Игрок';
+    const cleanup = findOrCreateRandomRoom(selfPlayerId, effectiveName, (matchedCode, asHost) => {
+      matchmakingCleanupRef.current = null;
+      joinOrCreateCoopRoom(matchedCode, asHost);
+    });
+    matchmakingCleanupRef.current = cleanup;
+  }, [isMatchmaking, playerName, user, selfPlayerId, joinOrCreateCoopRoom]);
+
+  const handlePublishCoopConfig = useCallback(
+    (partialConfig: Partial<CoopGameConfig>, startRound: boolean = false) => {
+      if (!roomManagerRef.current || !isCoopHostRef.current) return;
+      const baseMode: CoopActiveMode =
+        partialConfig.mode ||
+        coopSharedConfigRef.current?.mode ||
+        (currentMode === 'classic_pet' ? 'speed_text' : currentMode);
+
+      const nextConfig: CoopGameConfig = {
+        ...(coopSharedConfigRef.current || {}),
+        ...partialConfig,
+        configId: partialConfig.configId || `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        mode: baseMode,
+      };
+
+      setCoopSharedConfig(nextConfig);
+      coopSharedConfigRef.current = nextConfig;
+
+      roomManagerRef.current.publishEvent({
+        type: startRound ? 'start_round' : 'sync_config',
+        senderId: selfPlayerId,
+        config: nextConfig,
+        timestamp: Date.now(),
+      });
+    },
+    [currentMode, selfPlayerId]
+  );
+
+  const handleStartCoopRoundFromBar = useCallback(() => {
+    if (!roomManagerRef.current || !isCoopHostRef.current) return;
+    const activeCoopMode: CoopActiveMode =
+      currentMode === 'classic_pet' ? 'speed_text' : currentMode;
+    const nextConfig: CoopGameConfig = {
+      ...(coopSharedConfigRef.current || { mode: activeCoopMode }),
+      mode: activeCoopMode,
+      configId: `${Date.now()}_start`,
+      sprintStartedAt: Date.now(),
+    };
+    setCoopSharedConfig(nextConfig);
+    coopSharedConfigRef.current = nextConfig;
+    setCoopRoundTrigger(t => t + 1);
+    roomManagerRef.current.publishEvent({
+      type: 'start_round',
+      senderId: selfPlayerId,
+      config: nextConfig,
+      timestamp: Date.now(),
+    });
+  }, [currentMode, selfPlayerId]);
+
+  const handleUpdateCoopSelfProgress = useCallback((patch: Partial<CoopPlayerState>) => {
+    if (!roomManagerRef.current) return;
+    roomManagerRef.current.updateSelfState(patch);
+  }, []);
+
+  const handleSendCoopChatMessage = useCallback(
+    (text: string) => {
+      const cleaned = text.trim();
+      if (!cleaned) return;
+      const effectiveName =
+        playerName.trim() || user?.displayName || (isCoopHost ? 'Хост-Котик' : 'Друг-Котик');
+      const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const timestamp = Date.now();
+
+      setCoopChatMessages(prev => [
+        ...prev,
+        {
+          id: messageId,
+          senderId: selfPlayerId,
+          senderName: effectiveName,
+          text: cleaned,
+          timestamp,
+        },
+      ]);
+
+      if (roomManagerRef.current) {
+        roomManagerRef.current.publishEvent({
+          type: 'chat_message',
+          senderId: selfPlayerId,
+          senderName: effectiveName,
+          messageId,
+          text: cleaned,
+          timestamp,
+        });
+      }
+    },
+    [playerName, user, isCoopHost, selfPlayerId]
+  );
+
+  const handleSelectMode = useCallback(
+    (nextMode: AppMode) => {
+      setCurrentMode(nextMode);
+      if (roomManagerRef.current && nextMode !== 'classic_pet') {
+        roomManagerRef.current.updateSelfState({
+          mode: nextMode,
+          progressPercent: 0,
+          isFinished: false,
+        });
+        if (isCoopHostRef.current) {
+          handlePublishCoopConfig({ mode: nextMode }, false);
+        }
+      }
+    },
+    [handlePublishCoopConfig]
+  );
+
+  const coopPartner = useMemo(
+    () => coopPlayers.find(p => p.playerId !== selfPlayerId) || null,
+    [coopPlayers, selfPlayerId]
+  );
+  const isCoopRoomActive = Boolean(coopRoomCode);
 
   const handleSpeedTextCompleted = useCallback((wpm: number, accuracy: number) => {
     const todayStr = getTodayLocalDateString();
@@ -853,13 +1196,16 @@ export default function App() {
     }));
   }, []);
 
-  const handleLetterMastered = useCallback(() => {
+  const handleLetterMastered = useCallback((letter?: string) => {
     const todayStr = getTodayLocalDateString();
     setQuestCounters(prev => ({
       ...prev,
       dailyDate: todayStr,
       dailySprintLetters: (prev.dailyDate === todayStr ? prev.dailySprintLetters : 0) + 1,
-      totalSprintLetters: prev.totalSprintLetters + 1
+      totalSprintLetters: prev.totalSprintLetters + 1,
+      learnedAlphabetLetters: letter
+        ? addLearnedAlphabetLetter(prev.learnedAlphabetLetters, letter)
+        : prev.learnedAlphabetLetters
     }));
   }, []);
 
@@ -936,14 +1282,23 @@ export default function App() {
             <h2 className="text-3xl sm:text-4xl font-black mb-2 text-amber-400 tracking-tight">
               ВРЕМЯ НАГРАДЫ!
             </h2>
-            <p className="text-sm text-slate-300 mb-8">
+            <p className="text-sm text-slate-300 mb-6">
               Ты заработал экранное время отличной печатью! Включи таймер на время мультиков или отдыха.
             </p>
 
             {/* Huge Clock */}
-            <div className="text-7xl sm:text-8xl font-mono font-black mb-6 bg-slate-800/90 text-amber-300 px-8 py-5 rounded-3xl shadow-2xl border-4 border-amber-400/80 tracking-wider">
+            <div className="text-7xl sm:text-8xl font-mono font-black mb-5 bg-slate-800/90 text-amber-300 px-8 py-5 rounded-3xl shadow-2xl border-4 border-amber-400/80 tracking-wider">
               {formatTimerClock(rewardSeconds)}
             </div>
+
+            {isCoopRoomActive && coopPartner && (
+              <div className="mb-5 bg-indigo-900/60 border border-indigo-400/40 rounded-2xl px-4 py-2.5 text-xs font-bold text-indigo-100 flex items-center justify-center gap-3 flex-wrap">
+                <span>🐾 Друг <b>{coopPartner.name}</b>:</span>
+                <span>Слов за сессию: <b className="text-amber-300">{coopPartner.sessionWordsTotal}</b></span>
+                <span>•</span>
+                <span>Заработал отдыха: <b className="text-emerald-300 font-mono">+{formatTimerClock(coopPartner.rewardSecondsTotal)}</b></span>
+              </div>
+            )}
 
             {/* Timer Controls */}
             <div className="flex items-center justify-center gap-4 mb-6">
@@ -1012,10 +1367,10 @@ export default function App() {
 
       {/* Main App Layout */}
       <div className="w-full max-w-7xl flex flex-col items-center">
-        {/* Header Bar with Quests and Wardrobe triggers */}
+        {/* Header Bar with Quests, Wardrobe, and Co-op triggers */}
         <HeaderBar
           currentMode={currentMode}
-          onSelectMode={setCurrentMode}
+          onSelectMode={handleSelectMode}
           user={user}
           onLogin={handleGoogleLogin}
           onLogout={handleGoogleLogout}
@@ -1034,6 +1389,38 @@ export default function App() {
           rewardSeconds={rewardSeconds}
           sessionWordCount={sessionWordCount}
           streakDays={streakDays}
+          isCoopOpen={isCoopOpen}
+          coopRoomCode={coopRoomCode}
+          coopPlayersCount={Math.max(1, coopPlayers.length)}
+          onToggleCoop={() => {
+            if (isCoopOpen && !coopRoomCode) {
+              setIsCoopOpen(false);
+            } else {
+              setIsCoopOpen(true);
+            }
+          }}
+        />
+
+        {/* Lazy Co-op Multiplayer Bar (MQTT over WebSockets - connects only when user creates/joins a room) */}
+        <CoopBar
+          isOpen={isCoopOpen}
+          onCloseCoop={() => {
+            handleLeaveCoopRoom();
+            setIsCoopOpen(false);
+          }}
+          roomCode={coopRoomCode}
+          isHost={isCoopHost}
+          connectionStatus={coopConnectionStatus}
+          isMatchmaking={isMatchmaking}
+          players={coopPlayers}
+          selfId={selfPlayerId}
+          playerName={playerName}
+          onChangePlayerName={setPlayerName}
+          onCreateRoom={handleCreateCoopRoom}
+          onJoinRoom={handleJoinCoopRoom}
+          onFindRandomPlayer={handleFindRandomCoopPlayer}
+          onLeaveRoom={handleLeaveCoopRoom}
+          onStartCoopRound={handleStartCoopRoundFromBar}
         />
 
         {/* Reward Training Notification Banner */}
@@ -1052,6 +1439,13 @@ export default function App() {
               <span className="bg-amber-200 px-3 py-1 rounded-xl text-amber-950 font-mono text-sm font-black border border-amber-300">
                 +{formatTimerClock(rewardSeconds)}
               </span>
+              {isCoopRoomActive && coopPartner && (
+                <span className="bg-indigo-600 text-white px-2.5 py-1 rounded-xl border border-indigo-400 flex items-center gap-1.5 shadow-2xs">
+                  <span>🐾 Друг ({coopPartner.name}): Слов <b>{coopPartner.sessionWordsTotal}</b></span>
+                  <span>|</span>
+                  <span className="font-mono text-amber-200">+{formatTimerClock(coopPartner.rewardSecondsTotal)}</span>
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => setIsRewardTimerActive(true)}
@@ -1120,6 +1514,13 @@ export default function App() {
               isRewardMode={isRewardMode}
               onWordCompleted={handleWordCompletedInAnyMode}
               onSpeedTextCompleted={handleSpeedTextCompleted}
+              isCoopRoomActive={isCoopRoomActive}
+              isCoopHost={isCoopHost}
+              coopPartner={coopPartner}
+              coopSharedConfig={coopSharedConfig}
+              coopRoundTrigger={coopRoundTrigger}
+              onPublishCoopConfig={handlePublishCoopConfig}
+              onUpdateCoopSelfProgress={handleUpdateCoopSelfProgress}
             />
           )}
 
@@ -1138,6 +1539,13 @@ export default function App() {
               isRewardMode={isRewardMode}
               onWordCompleted={handleWordCompletedInAnyMode}
               onMarathonCompleted={handleMarathonCompleted}
+              isCoopRoomActive={isCoopRoomActive}
+              isCoopHost={isCoopHost}
+              coopPartner={coopPartner}
+              coopSharedConfig={coopSharedConfig}
+              coopRoundTrigger={coopRoundTrigger}
+              onPublishCoopConfig={handlePublishCoopConfig}
+              onUpdateCoopSelfProgress={handleUpdateCoopSelfProgress}
             />
           )}
 
@@ -1157,6 +1565,14 @@ export default function App() {
               onWordCompleted={handleWordCompletedInAnyMode}
               onUnlockAchievement={unlockAchievement}
               onLetterMastered={handleLetterMastered}
+              learnedAlphabetLetters={parseLearnedAlphabetLetters(questCounters.learnedAlphabetLetters)}
+              isCoopRoomActive={isCoopRoomActive}
+              isCoopHost={isCoopHost}
+              coopPartner={coopPartner}
+              coopSharedConfig={coopSharedConfig}
+              coopRoundTrigger={coopRoundTrigger}
+              onPublishCoopConfig={handlePublishCoopConfig}
+              onUpdateCoopSelfProgress={handleUpdateCoopSelfProgress}
             />
           )}
 
@@ -1172,6 +1588,13 @@ export default function App() {
               isRewardMode={isRewardMode}
               onWordCompleted={handleWordCompletedInAnyMode}
               onChatSent={handleChatSent}
+              isCoopRoomActive={isCoopRoomActive}
+              coopRoomCode={coopRoomCode}
+              coopPartner={coopPartner}
+              coopChatMessages={coopChatMessages}
+              onSendCoopChatMessage={handleSendCoopChatMessage}
+              onClearCoopChatMessages={() => setCoopChatMessages([])}
+              selfPlayerId={selfPlayerId}
             />
           )}
         </main>

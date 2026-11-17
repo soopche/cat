@@ -207,7 +207,7 @@ export const DailyQuestsModal: React.FC<DailyQuestsModalProps> = ({
               }`}
             >
               <Crown className="w-4 h-4" />
-              <span>30 испытаний ({longTermClaimedCount}/{longTermQuests.length})</span>
+              <span>Долгие квесты ({longTermClaimedCount}/{longTermQuests.length})</span>
               {longTermReadyToClaim > 0 && (
                 <span className="px-2 py-0.5 text-[10px] rounded-full bg-emerald-400 text-slate-950 font-black animate-pulse">
                   +{longTermReadyToClaim}

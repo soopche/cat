@@ -100,21 +100,44 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
   const [cpm, setCpm] = useState<number>(0);
   const [accuracy, setAccuracy] = useState<number>(100);
   const [hasSaved, setHasSaved] = useState<boolean>(false);
+  const [racePhase, setRacePhase] = useState<'ready' | 'countdown' | 'racing'>('ready');
+  const [countdownValue, setCountdownValue] = useState<number>(3);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textContainerRef = useRef<HTMLDivElement>(null);
   const tabletInputRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const racePhaseRef = useRef<'ready' | 'countdown' | 'racing'>('ready');
   const typedTextRef = useRef<string>('');
   const errorsCountRef = useRef<number>(0);
   const lastKeydownTimeRef = useRef<number>(0);
   const appliedConfigIdRef = useRef<string>('');
+  const lastStartedRoundAtRef = useRef<number>(0);
+  const prevRoundTriggerRef = useRef<number>(coopRoundTrigger);
 
+  racePhaseRef.current = racePhase;
   typedTextRef.current = typedText;
   errorsCountRef.current = errorsCount;
 
-  // Reset or switch text
+  // Cleanup countdown interval on unmount
+  useEffect(() => {
+    return () => {
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    };
+  }, []);
+
+  // Reset or switch text (returns to 'ready' preparation phase)
   const resetTest = useCallback((newText?: string, broadcastToCoop: boolean = false, newStoryId?: string) => {
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
     const rawToUse = newText !== undefined ? newText : targetText;
     const textToUse = sanitizeTypingText(rawToUse) || sanitizeTypingText(PRESET_STORIES[0].text);
     setTypedText('');
@@ -129,7 +152,9 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
     setCpm(0);
     setAccuracy(100);
     setHasSaved(false);
-    if (timerRef.current) clearInterval(timerRef.current);
+    setRacePhase('ready');
+    racePhaseRef.current = 'ready';
+    setCountdownValue(3);
     setTargetText(textToUse);
 
     onUpdateCoopSelfProgress?.({
@@ -149,14 +174,73 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
         {
           mode: 'speed_text',
           speedStoryId: newStoryId || selectedStoryId,
-          speedTargetText: textToUse
+          speedTargetText: textToUse,
+          sprintStartedAt: undefined
         },
-        true
+        false
       );
     }
   }, [targetText, isCoopRoomActive, isCoopHost, selectedStoryId, onPublishCoopConfig, onUpdateCoopSelfProgress]);
 
-  // Sync when Co-op shared config updates (Guest round start)
+  // Launch 3, 2, 1 countdown and then unlock typing + start timer simultaneously
+  const beginCountdown = useCallback((textOverride?: string, storyIdOverride?: string) => {
+    const activeEl = document.activeElement;
+    if (
+      activeEl instanceof HTMLElement &&
+      activeEl !== tabletInputRef.current &&
+      (activeEl.tagName === 'BUTTON' || activeEl.tagName === 'INPUT')
+    ) {
+      activeEl.blur();
+    }
+
+    resetTest(textOverride, false, storyIdOverride);
+    setRacePhase('countdown');
+    racePhaseRef.current = 'countdown';
+    setCountdownValue(3);
+    if (soundEnabled) playCorrectBeep();
+
+    let count = 3;
+    countdownIntervalRef.current = setInterval(() => {
+      count -= 1;
+      if (count >= 1) {
+        setCountdownValue(count);
+        if (soundEnabled) playCorrectBeep();
+      } else {
+        if (countdownIntervalRef.current) {
+          clearInterval(countdownIntervalRef.current);
+          countdownIntervalRef.current = null;
+        }
+        setRacePhase('racing');
+        racePhaseRef.current = 'racing';
+        setStartTime(Date.now());
+        if (soundEnabled) playCorrectBeep();
+        if (isMobileMode) {
+          tabletInputRef.current?.focus({ preventScroll: true });
+        }
+      }
+    }, 1000);
+  }, [resetTest, soundEnabled, isMobileMode]);
+
+  // Start button handler (Solo or Co-op Host)
+  const handleStartRace = useCallback((e?: React.MouseEvent<HTMLButtonElement>) => {
+    e?.currentTarget.blur();
+    if (isCoopRoomActive && isCoopHost) {
+      const startedAt = Date.now();
+      lastStartedRoundAtRef.current = startedAt;
+      onPublishCoopConfig?.(
+        {
+          mode: 'speed_text',
+          speedStoryId: selectedStoryId,
+          speedTargetText: targetText,
+          sprintStartedAt: startedAt
+        },
+        true
+      );
+    }
+    beginCountdown(targetText, selectedStoryId);
+  }, [isCoopRoomActive, isCoopHost, selectedStoryId, targetText, onPublishCoopConfig, beginCountdown]);
+
+  // Sync when Co-op shared config updates (Guest round start or story selection)
   useEffect(() => {
     if (!isCoopRoomActive || isCoopHost || !coopSharedConfig || coopSharedConfig.mode !== 'speed_text') return;
     if (coopSharedConfig.configId && coopSharedConfig.configId !== appliedConfigIdRef.current) {
@@ -164,31 +248,43 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
       if (coopSharedConfig.speedStoryId) {
         setSelectedStoryId(coopSharedConfig.speedStoryId);
       }
-      if (coopSharedConfig.speedTargetText) {
+
+      if (
+        coopSharedConfig.sprintStartedAt &&
+        coopSharedConfig.sprintStartedAt !== lastStartedRoundAtRef.current
+      ) {
+        lastStartedRoundAtRef.current = coopSharedConfig.sprintStartedAt;
+        beginCountdown(coopSharedConfig.speedTargetText || targetText, coopSharedConfig.speedStoryId);
+        return;
+      }
+
+      if (!isFinished && racePhaseRef.current === 'ready' && coopSharedConfig.speedTargetText) {
         resetTest(coopSharedConfig.speedTargetText, false);
       }
     }
-  }, [isCoopRoomActive, isCoopHost, coopSharedConfig, resetTest]);
+  }, [isCoopRoomActive, isCoopHost, coopSharedConfig, isFinished, targetText, resetTest, beginCountdown]);
 
-  // Also reset round when Host clicks "Начать игру" in CoopBar
+  // Also launch 3-2-1 countdown when Host clicks "Начать игру" in CoopBar
   useEffect(() => {
-    if (coopRoundTrigger > 0 && isCoopRoomActive) {
+    if (coopRoundTrigger > 0 && coopRoundTrigger !== prevRoundTriggerRef.current && isCoopRoomActive) {
+      prevRoundTriggerRef.current = coopRoundTrigger;
       if (isCoopHost) {
-        resetTest(targetText, true, selectedStoryId);
+        handleStartRace();
       } else {
-        resetTest(coopSharedConfig?.speedTargetText || targetText, false);
+        beginCountdown(coopSharedConfig?.speedTargetText || targetText, coopSharedConfig?.speedStoryId);
       }
     }
-  }, [coopRoundTrigger]);
+  }, [coopRoundTrigger, isCoopRoomActive, isCoopHost, handleStartRace, beginCountdown, coopSharedConfig, targetText]);
 
   // Publish initial host config when entering SpeedTextMode as Host
   useEffect(() => {
-    if (isCoopRoomActive && isCoopHost) {
+    if (isCoopRoomActive && isCoopHost && racePhase === 'ready' && !isFinished) {
       onPublishCoopConfig?.(
         {
           mode: 'speed_text',
           speedStoryId: selectedStoryId,
-          speedTargetText: targetText
+          speedTargetText: targetText,
+          sprintStartedAt: undefined
         },
         false
       );
@@ -197,7 +293,7 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
 
   // Handle timer without resetting interval on every typed letter
   useEffect(() => {
-    if (startTime && !isFinished) {
+    if (startTime && !isFinished && racePhase === 'racing') {
       const updateLiveMetrics = () => {
         const seconds = Math.max(1, Math.floor((Date.now() - startTime) / 1000));
         setElapsedSeconds(seconds);
@@ -232,7 +328,7 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [startTime, isFinished, targetText.length, onUpdateCoopSelfProgress]);
+  }, [startTime, isFinished, racePhase, targetText.length, onUpdateCoopSelfProgress]);
 
   // Complete handling
   const completeTyping = useCallback((finalErrors: number) => {
@@ -273,9 +369,9 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
     onSpeedTextCompleted?.(finalWpm, finalAcc);
   }, [startTime, targetText, soundEnabled, onAddXp, onSpeedTextCompleted, onUpdateCoopSelfProgress]);
 
-  // Handle key press
+  // Handle key press (only active after 3-2-1 countdown finishes)
   const handleCharInput = useCallback((char: string) => {
-    if (isFinished || !targetText) return;
+    if (isFinished || !targetText || racePhaseRef.current !== 'racing') return;
 
     const now = Date.now();
     const effectiveStart = startTime ?? now;
@@ -365,6 +461,11 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
         return;
       }
 
+      if (racePhaseRef.current !== 'racing') {
+        if (e.key === ' ') e.preventDefault();
+        return;
+      }
+
       if (e.key === ' ') {
         e.preventDefault();
         lastKeydownTimeRef.current = Date.now();
@@ -386,7 +487,7 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
   const handleTabletInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     e.target.value = '';
-    if (!val || showCustomModal) return;
+    if (!val || showCustomModal || racePhaseRef.current !== 'racing') return;
     if (Date.now() - lastKeydownTimeRef.current < 25) return;
     const lastChar = val[val.length - 1];
     if (lastChar) {
@@ -458,7 +559,7 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
     setHasSaved(true);
   };
 
-  const currentChar = !isFinished && typedText.length < targetText.length
+  const currentChar = !isFinished && racePhase === 'racing' && typedText.length < targetText.length
     ? targetText[typedText.length]
     : undefined;
 
@@ -728,17 +829,57 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
         ref={textContainerRef}
         translate="no"
         onClick={() => {
-          if (isMobileMode) {
+          if (isMobileMode && racePhase === 'racing') {
             tabletInputRef.current?.focus({ preventScroll: true });
           }
         }}
         className="notranslate w-full bg-white rounded-3xl p-5 sm:p-7 shadow-md border-2 border-slate-200/90 min-h-[170px] relative font-sans text-lg sm:text-xl leading-relaxed select-none overflow-y-auto max-h-[300px]"
       >
-        {!startTime && typedText.length === 0 && (
+        {!isFinished && racePhase === 'ready' && (
+          <div className="mb-3 p-3 rounded-2xl bg-gradient-to-r from-blue-50 via-indigo-50 to-emerald-50 border border-blue-200 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-xs sm:text-sm font-bold text-slate-700">
+              <Zap className="w-4 h-4 text-blue-600 shrink-0" />
+              <span>
+                {isCoopRoomActive && !isCoopHost
+                  ? 'Приготовь пальцы! Ожидаем старт (3, 2, 1) от создателя комнаты или нажми Старт:'
+                  : 'Приготовь пальцы на клавиатуре! Нажми «Старт» для отсчёта 3, 2, 1:'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleStartRace}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+              }}
+              className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-black text-sm shadow-md active:scale-95 transition flex items-center gap-2 cursor-pointer"
+            >
+              <Play className="w-4 h-4 fill-current" />
+              <span>Старт (3, 2, 1)</span>
+            </button>
+          </div>
+        )}
+
+        {!isFinished && racePhase === 'countdown' && (
+          <div className="mb-3 p-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 text-white shadow-lg flex items-center justify-center gap-4 animate-pulse">
+            <span className="text-3xl sm:text-4xl font-black font-mono bg-white text-orange-600 w-12 h-12 rounded-2xl flex items-center justify-center shadow-md">
+              {countdownValue}
+            </span>
+            <div className="text-left">
+              <div className="text-sm sm:text-base font-black uppercase tracking-wide">
+                Приготовься! Старт через {countdownValue}...
+              </div>
+              <div className="text-xs text-amber-100 font-semibold">
+                Поставь пальцы на стартовую позицию!
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!isFinished && racePhase === 'racing' && typedText.length === 0 && (
           <div className="mb-2 flex items-center justify-end">
-            <div className="inline-flex items-center gap-1.5 text-xs text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full font-bold animate-pulse">
-              <Zap className="w-3.5 h-3.5" />
-              Начни печатать любой символ, чтобы запустить таймер!
+            <div className="inline-flex items-center gap-1.5 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-full font-black animate-bounce">
+              <Zap className="w-3.5 h-3.5 text-emerald-600" />
+              🏁 СТАРТ! Печатай текст!
             </div>
           </div>
         )}
@@ -894,7 +1035,7 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
         onToggleMobileMode={onToggleMobileMode}
         kbScale={kbScale}
         onSetKbScale={onSetKbScale}
-        disabled={isFinished}
+        disabled={isFinished || racePhase !== 'racing'}
       />
 
       {/* Custom Text Modal */}

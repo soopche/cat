@@ -1072,6 +1072,9 @@ export default function App() {
       const nextConfig: CoopGameConfig = {
         ...(coopSharedConfigRef.current || {}),
         ...partialConfig,
+        ...(startRound
+          ? {}
+          : { sprintStartedAt: undefined, sprintSequence: undefined }),
         configId: partialConfig.configId || `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         mode: baseMode,
       };
@@ -1091,24 +1094,8 @@ export default function App() {
 
   const handleStartCoopRoundFromBar = useCallback(() => {
     if (!roomManagerRef.current || !isCoopHostRef.current) return;
-    const activeCoopMode: CoopActiveMode =
-      currentMode === 'classic_pet' ? 'speed_text' : currentMode;
-    const nextConfig: CoopGameConfig = {
-      ...(coopSharedConfigRef.current || { mode: activeCoopMode }),
-      mode: activeCoopMode,
-      configId: `${Date.now()}_start`,
-      sprintStartedAt: Date.now(),
-    };
-    setCoopSharedConfig(nextConfig);
-    coopSharedConfigRef.current = nextConfig;
     setCoopRoundTrigger(t => t + 1);
-    roomManagerRef.current.publishEvent({
-      type: 'start_round',
-      senderId: selfPlayerId,
-      config: nextConfig,
-      timestamp: Date.now(),
-    });
-  }, [currentMode, selfPlayerId]);
+  }, []);
 
   const handleUpdateCoopSelfProgress = useCallback((patch: Partial<CoopPlayerState>) => {
     if (!roomManagerRef.current) return;

@@ -15,7 +15,8 @@ import {
   formatSyllables,
   RUSSIAN_ALPHABET,
   WORDS_BY_LETTER,
-  getNextCustomSprintLetter
+  getNextCustomSprintLetter,
+  matchesRussianTypedChar
 } from './words';
 
 test('getCatLevelFromXp and getCatXpProgressInfo handle 7300 XP as master progressing toward 12000 XP cosmic', () => {
@@ -145,3 +146,15 @@ test('formatSyllables splits Russian words cleanly without trailing consonant hy
   assert.equal(formatSyllables('СУП'), 'СУП');
   assert.equal(formatSyllables('КОШКА'), 'КОШ-КА');
 });
+
+test('matchesRussianTypedChar handles Cyrillic, Ё/Е equivalence, and physical Russian key / English layout fallback', () => {
+  assert.equal(matchesRussianTypedChar('а', 'А'), true);
+  assert.equal(matchesRussianTypedChar('А', 'А'), true);
+  assert.equal(matchesRussianTypedChar('е', 'Ё'), true);
+  assert.equal(matchesRussianTypedChar('ё', 'Е'), true);
+  assert.equal(matchesRussianTypedChar('f', 'А', 'KeyF'), true);
+  assert.equal(matchesRussianTypedChar('[', 'Х', 'BracketLeft'), true);
+  assert.equal(matchesRussianTypedChar(';', 'Ж', 'Semicolon'), true);
+  assert.equal(matchesRussianTypedChar('b', 'А', 'KeyB'), false);
+});
+

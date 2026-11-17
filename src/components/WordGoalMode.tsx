@@ -5,9 +5,11 @@ import {
   Trophy, 
   Clock, 
   Volume2,
-  Crown
+  Crown,
+  Play,
+  Zap
 } from 'lucide-react';
-import { WORD_DATABASE, WORD_EMOJIS, formatSyllables } from '../data/words';
+import { WORD_DATABASE, WORD_EMOJIS, formatSyllables, matchesRussianTypedChar } from '../data/words';
 import { VirtualKeyboard } from './VirtualKeyboard';
 import { 
   playCorrectBeep, 
@@ -84,8 +86,12 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
   const [cpm, setCpm] = useState<number>(0);
   const [accuracy, setAccuracy] = useState<number>(100);
   const [hintKey, setHintKey] = useState<string | null>(null);
+  const [racePhase, setRacePhase] = useState<'ready' | 'countdown' | 'racing'>('ready');
+  const [countdownValue, setCountdownValue] = useState<number>(3);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const racePhaseRef = useRef<'ready' | 'countdown' | 'racing'>('ready');
   const customInputRef = useRef<HTMLInputElement>(null);
   const tabletInputRef = useRef<HTMLInputElement>(null);
   const currentWordIndexRef = useRef<number>(0);
@@ -94,7 +100,10 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
   const wordTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastKeydownTimeRef = useRef<number>(0);
   const appliedConfigIdRef = useRef<string>('');
+  const lastStartedRoundAtRef = useRef<number>(0);
+  const prevRoundTriggerRef = useRef<number>(coopRoundTrigger);
 
+  racePhaseRef.current = racePhase;
   currentWordIndexRef.current = currentWordIndex;
   typedCharsRef.current = typedChars;
   errorsCountRef.current = errorsCount;
@@ -117,16 +126,25 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     return queue;
   };
 
-  // Start or reset game for a specific goal (or shared Co-op queue)
+  // Start or reset game for a specific goal (returns to 'ready' preparation phase)
   const startGoalGame = useCallback((
     goalCount: number,
     sharedQueue?: string[],
     broadcastToCoop: boolean = false
   ) => {
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
     if (wordTransitionTimeoutRef.current) {
       clearTimeout(wordTransitionTimeoutRef.current);
       wordTransitionTimeoutRef.current = null;
     }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
     const validatedCount = Math.max(3, Math.min(300, goalCount));
     const newQueue = sharedQueue && sharedQueue.length > 0 ? sharedQueue : buildWordQueue(validatedCount);
 
@@ -148,11 +166,9 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     setCpm(0);
     setAccuracy(100);
     setHintKey(null);
-
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
+    setRacePhase('ready');
+    racePhaseRef.current = 'ready';
+    setCountdownValue(3);
 
     onUpdateCoopSelfProgress?.({
       mode: 'word_goal',
@@ -171,61 +187,159 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
         {
           mode: 'word_goal',
           marathonTargetGoal: validatedCount,
-          marathonWordsQueue: newQueue
+          marathonWordsQueue: newQueue,
+          sprintStartedAt: undefined
+        },
+        false
+      );
+    }
+
+    return newQueue;
+  }, [isCoopRoomActive, isCoopHost, onPublishCoopConfig, onUpdateCoopSelfProgress]);
+
+  // Launch 3, 2, 1 countdown and then unlock typing + start timer simultaneously
+  const beginCountdown = useCallback((goalOverride?: number, queueOverride?: string[]) => {
+    const activeEl = document.activeElement;
+    if (
+      activeEl instanceof HTMLElement &&
+      activeEl !== tabletInputRef.current &&
+      (activeEl.tagName === 'BUTTON' || activeEl.tagName === 'INPUT')
+    ) {
+      activeEl.blur();
+    }
+
+    const goalToUse = goalOverride ?? targetGoal;
+    const queueToUse = queueOverride && queueOverride.length > 0 ? queueOverride : wordsQueue;
+    startGoalGame(goalToUse, queueToUse, false);
+
+    setRacePhase('countdown');
+    racePhaseRef.current = 'countdown';
+    setCountdownValue(3);
+    if (soundEnabled) playCorrectBeep();
+
+    let count = 3;
+    countdownIntervalRef.current = setInterval(() => {
+      count -= 1;
+      if (count >= 1) {
+        setCountdownValue(count);
+        if (soundEnabled) playCorrectBeep();
+      } else {
+        if (countdownIntervalRef.current) {
+          clearInterval(countdownIntervalRef.current);
+          countdownIntervalRef.current = null;
+        }
+        setRacePhase('racing');
+        racePhaseRef.current = 'racing';
+        setStartTime(Date.now());
+        if (soundEnabled) playCorrectBeep();
+        if (isMobileMode) {
+          tabletInputRef.current?.focus({ preventScroll: true });
+        }
+      }
+    }, 1000);
+  }, [targetGoal, wordsQueue, startGoalGame, soundEnabled, isMobileMode]);
+
+  // Start button handler (Solo or Co-op Host)
+  const handleStartRace = useCallback((e?: React.MouseEvent<HTMLButtonElement>) => {
+    e?.currentTarget.blur();
+    const queueForRace = wordsQueue.length === targetGoal ? wordsQueue : buildWordQueue(targetGoal);
+    if (isCoopRoomActive && isCoopHost) {
+      const startedAt = Date.now();
+      lastStartedRoundAtRef.current = startedAt;
+      onPublishCoopConfig?.(
+        {
+          mode: 'word_goal',
+          marathonTargetGoal: targetGoal,
+          marathonWordsQueue: queueForRace,
+          sprintStartedAt: startedAt
         },
         true
       );
     }
-  }, [isCoopRoomActive, isCoopHost, onPublishCoopConfig, onUpdateCoopSelfProgress]);
+    beginCountdown(targetGoal, queueForRace);
+  }, [wordsQueue, targetGoal, isCoopRoomActive, isCoopHost, onPublishCoopConfig, beginCountdown]);
 
   // Initialize once on mount with 50 words
   useEffect(() => {
     startGoalGame(50, undefined, false);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
       if (wordTransitionTimeoutRef.current) clearTimeout(wordTransitionTimeoutRef.current);
     };
   }, []);
 
-  // Sync when Co-op shared config updates (Guest round start)
+  // Sync when Co-op shared config updates (Guest round start or goal selection)
   useEffect(() => {
     if (!isCoopRoomActive || isCoopHost || !coopSharedConfig || coopSharedConfig.mode !== 'word_goal') return;
     if (coopSharedConfig.configId && coopSharedConfig.configId !== appliedConfigIdRef.current) {
       appliedConfigIdRef.current = coopSharedConfig.configId;
-      if (coopSharedConfig.marathonTargetGoal && coopSharedConfig.marathonWordsQueue) {
-        startGoalGame(coopSharedConfig.marathonTargetGoal, coopSharedConfig.marathonWordsQueue, false);
-      }
-    }
-  }, [isCoopRoomActive, isCoopHost, coopSharedConfig, startGoalGame]);
 
-  // Also reset round when Host clicks "Начать игру" in CoopBar
-  useEffect(() => {
-    if (coopRoundTrigger > 0 && isCoopRoomActive) {
-      if (isCoopHost) {
-        startGoalGame(targetGoal, undefined, true);
-      } else if (coopSharedConfig?.marathonTargetGoal && coopSharedConfig?.marathonWordsQueue) {
+      if (
+        coopSharedConfig.sprintStartedAt &&
+        coopSharedConfig.sprintStartedAt !== lastStartedRoundAtRef.current
+      ) {
+        lastStartedRoundAtRef.current = coopSharedConfig.sprintStartedAt;
+        beginCountdown(
+          coopSharedConfig.marathonTargetGoal || targetGoal,
+          coopSharedConfig.marathonWordsQueue || wordsQueue
+        );
+        return;
+      }
+
+      if (
+        !isFinished &&
+        racePhaseRef.current === 'ready' &&
+        coopSharedConfig.marathonTargetGoal &&
+        coopSharedConfig.marathonWordsQueue
+      ) {
         startGoalGame(coopSharedConfig.marathonTargetGoal, coopSharedConfig.marathonWordsQueue, false);
       }
     }
-  }, [coopRoundTrigger]);
+  }, [isCoopRoomActive, isCoopHost, coopSharedConfig, isFinished, targetGoal, wordsQueue, startGoalGame, beginCountdown]);
+
+  // Also launch 3-2-1 countdown when Host clicks "Начать игру" in CoopBar
+  useEffect(() => {
+    if (coopRoundTrigger > 0 && coopRoundTrigger !== prevRoundTriggerRef.current && isCoopRoomActive) {
+      prevRoundTriggerRef.current = coopRoundTrigger;
+      if (isCoopHost) {
+        const freshQueue = buildWordQueue(targetGoal);
+        const startedAt = Date.now();
+        lastStartedRoundAtRef.current = startedAt;
+        onPublishCoopConfig?.(
+          {
+            mode: 'word_goal',
+            marathonTargetGoal: targetGoal,
+            marathonWordsQueue: freshQueue,
+            sprintStartedAt: startedAt
+          },
+          true
+        );
+        beginCountdown(targetGoal, freshQueue);
+      } else if (coopSharedConfig?.marathonTargetGoal && coopSharedConfig?.marathonWordsQueue) {
+        beginCountdown(coopSharedConfig.marathonTargetGoal, coopSharedConfig.marathonWordsQueue);
+      }
+    }
+  }, [coopRoundTrigger, isCoopRoomActive, isCoopHost, targetGoal, onPublishCoopConfig, beginCountdown, coopSharedConfig]);
 
   // Publish initial host config when entering WordGoalMode as Host
   useEffect(() => {
-    if (isCoopRoomActive && isCoopHost && wordsQueue.length > 0) {
+    if (isCoopRoomActive && isCoopHost && wordsQueue.length > 0 && racePhase === 'ready' && !isFinished) {
       onPublishCoopConfig?.(
         {
           mode: 'word_goal',
           marathonTargetGoal: targetGoal,
-          marathonWordsQueue: wordsQueue
+          marathonWordsQueue: wordsQueue,
+          sprintStartedAt: undefined
         },
         false
       );
     }
   }, [isCoopRoomActive, isCoopHost]);
 
-  // Smooth, uninterrupted live timer
+  // Smooth, uninterrupted live timer (runs only during 'racing' phase)
   useEffect(() => {
-    if (startTime && !isFinished) {
+    if (startTime && !isFinished && racePhase === 'racing') {
       const updateTimer = () => {
         const seconds = Math.max(1, Math.floor((Date.now() - startTime) / 1000));
         setElapsedSeconds(seconds);
@@ -251,19 +365,19 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [startTime, isFinished, targetGoal, onUpdateCoopSelfProgress]);
+  }, [startTime, isFinished, racePhase, targetGoal, onUpdateCoopSelfProgress]);
 
   const currentWord = wordsQueue[currentWordIndex] || '';
 
-  // Auto hint
+  // Auto hint (only when actively racing)
   useEffect(() => {
-    if (!currentWord || isFinished) return;
+    if (!currentWord || isFinished || racePhase !== 'racing') return;
     const nextChar = currentWord[typedChars.length];
     const timer = setTimeout(() => {
       setHintKey(nextChar);
     }, 3500);
     return () => clearTimeout(timer);
-  }, [currentWord, typedChars, isFinished]);
+  }, [currentWord, typedChars, isFinished, racePhase]);
 
   // Handle completion
   const handleFinished = useCallback((finalErrors: number) => {
@@ -326,9 +440,9 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     }
   }, [targetGoal, handleFinished, onUpdateCoopSelfProgress]);
 
-  // Handle character input
-  const handleCharInput = useCallback((char: string) => {
-    if (isFinished || !currentWord) return;
+  // Handle character input (only active after 3-2-1 countdown finishes)
+  const handleCharInput = useCallback((char: string, keyCode?: string) => {
+    if (isFinished || !currentWord || racePhaseRef.current !== 'racing') return;
     if (typedCharsRef.current.length >= currentWord.length) return;
 
     if (!startTime) {
@@ -336,12 +450,9 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     }
 
     const nextExpected = currentWord[typedCharsRef.current.length];
-    const upperInput = char.toUpperCase();
-    const isYoEquivalent =
-      (nextExpected === 'Ё' && upperInput === 'Е') ||
-      (nextExpected === 'Е' && upperInput === 'Ё');
+    if (!nextExpected) return;
 
-    if (upperInput === nextExpected || isYoEquivalent || (nextExpected === ' ' && char === ' ')) {
+    if (matchesRussianTypedChar(char, nextExpected, keyCode)) {
       if (soundEnabled) playCorrectBeep();
       setHintKey(null);
       const newTyped = typedCharsRef.current + nextExpected;
@@ -395,16 +506,18 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
         if (activeEl instanceof HTMLButtonElement) {
           activeEl.blur();
         }
-        if (currentWord[typedCharsRef.current.length] === ' ') {
+        if (racePhaseRef.current === 'racing' && currentWord[typedCharsRef.current.length] === ' ') {
           lastKeydownTimeRef.current = Date.now();
           handleCharInput(' ');
         }
         return;
       }
 
+      if (racePhaseRef.current !== 'racing') return;
+
       if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
         lastKeydownTimeRef.current = Date.now();
-        handleCharInput(e.key);
+        handleCharInput(e.key, e.code);
       }
     };
     window.addEventListener('keydown', handleKeyDown, { capture: true });
@@ -415,7 +528,7 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
   const handleTabletInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     e.target.value = '';
-    if (!val) return;
+    if (!val || racePhaseRef.current !== 'racing') return;
     if (Date.now() - lastKeydownTimeRef.current < 25) return;
     const lastChar = val[val.length - 1];
     if (lastChar) {
@@ -458,7 +571,7 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
   const partnerWordsDone = coopPartner?.wordsCompleted ?? 0;
   const partnerProgressPercent = Math.min(100, Math.round((partnerWordsDone / Math.max(1, targetGoal)) * 100));
 
-  const expectedChar = !isFinished && currentWord ? currentWord[typedChars.length] : undefined;
+  const expectedChar = !isFinished && racePhase === 'racing' && currentWord ? currentWord[typedChars.length] : undefined;
   const currentEmoji = WORD_EMOJIS[currentWord] || '🐾';
   const canChangeSettings = !isCoopRoomActive || isCoopHost;
 
@@ -679,12 +792,52 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
         <div
           translate="no"
           onClick={() => {
-            if (isMobileMode) {
+            if (isMobileMode && racePhase === 'racing') {
               tabletInputRef.current?.focus({ preventScroll: true });
             }
           }}
           className="notranslate w-full bg-white rounded-3xl p-6 sm:p-8 shadow-md border-2 border-emerald-100 flex flex-col items-center justify-center relative min-h-[190px]"
         >
+          {racePhase === 'ready' && (
+            <div className="w-full mb-4 p-3 rounded-2xl bg-gradient-to-r from-emerald-50 via-teal-50 to-blue-50 border border-emerald-200 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs sm:text-sm font-bold text-slate-700">
+                <Zap className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>
+                  {isCoopRoomActive && !isCoopHost
+                    ? 'Приготовь пальцы! Ожидаем старт (3, 2, 1) от создателя комнаты или нажми Старт:'
+                    : 'Приготовь пальцы на клавиатуре! Нажми «Старт» для отсчёта 3, 2, 1:'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleStartRace}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+                }}
+                className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-black text-sm shadow-md active:scale-95 transition flex items-center gap-2 cursor-pointer"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                <span>Старт (3, 2, 1)</span>
+              </button>
+            </div>
+          )}
+
+          {racePhase === 'countdown' && (
+            <div className="w-full mb-4 p-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 text-white shadow-lg flex items-center justify-center gap-4 animate-pulse">
+              <span className="text-3xl sm:text-4xl font-black font-mono bg-white text-orange-600 w-12 h-12 rounded-2xl flex items-center justify-center shadow-md">
+                {countdownValue}
+              </span>
+              <div className="text-left">
+                <div className="text-sm sm:text-base font-black uppercase tracking-wide">
+                  Приготовься! Старт через {countdownValue}...
+                </div>
+                <div className="text-xs text-amber-100 font-semibold">
+                  Поставь пальцы на стартовую позицию!
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="text-4xl sm:text-5xl mb-2 animate-bounce">
             {currentEmoji}
           </div>
@@ -864,7 +1017,7 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
         onToggleMobileMode={onToggleMobileMode}
         kbScale={kbScale}
         onSetKbScale={onSetKbScale}
-        disabled={isFinished}
+        disabled={isFinished || racePhase !== 'racing'}
       />
     </div>
   );

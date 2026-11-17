@@ -19,7 +19,8 @@ import {
   WORD_EMOJIS, 
   VOWEL_LETTERS,
   getNextCustomSprintLetter,
-  formatSyllables 
+  formatSyllables,
+  matchesRussianTypedChar
 } from '../data/words';
 import { VirtualKeyboard } from './VirtualKeyboard';
 import { 
@@ -118,7 +119,7 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
   onUpdateCoopSelfProgress
 }) => {
   const [sprintSubMode, setSprintSubMode] = useState<SprintSubMode>('random');
-  const [selectedLetters, setSelectedLetters] = useState<string[]>(['А', 'О', 'Д']);
+  const [selectedLetters, setSelectedLetters] = useState<string[]>(['А']);
 
   // Configuration
   const [wordsPerLetter, setWordsPerLetter] = useState<number>(5);
@@ -140,11 +141,16 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
   const [hasSaved, setHasSaved] = useState<boolean>(false);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const nextLetterTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startTimeRef = useRef<number>(0);
   const customLetterCursorRef = useRef<number>(0);
   const sharedSequenceRef = useRef<{ letter: string; words: string[] }[] | null>(null);
   const sequenceRoundIdxRef = useRef<number>(0);
   const appliedConfigIdRef = useRef<string>('');
+  const lastStartedSprintAtRef = useRef<number>(0);
+  const prevRoundTriggerRef = useRef<number>(coopRoundTrigger);
+  const currentWordRef = useRef<string>('КОТ');
+  const typedCharsRef = useRef<string>('');
 
   const canChangeSettings = !isCoopRoomActive || isCoopHost;
 
@@ -179,7 +185,9 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
       sequenceRoundIdxRef.current += 1;
       setCurrentLetter(item.letter);
       setLetterWordsPool(item.words);
+      currentWordRef.current = item.words[0];
       setCurrentWord(item.words[0]);
+      typedCharsRef.current = '';
       setTypedChars('');
       setWordsCompletedForLetter(0);
       setHintKey(null);
@@ -197,7 +205,9 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
       );
       setCurrentLetter(letter);
       setLetterWordsPool(words);
+      currentWordRef.current = words[0];
       setCurrentWord(words[0]);
+      typedCharsRef.current = '';
       setTypedChars('');
       setWordsCompletedForLetter(0);
       setHintKey(null);
@@ -215,7 +225,9 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
     );
     setCurrentLetter(randomLetter);
     setLetterWordsPool(words);
+    currentWordRef.current = words[0];
     setCurrentWord(words[0]);
+    typedCharsRef.current = '';
     setTypedChars('');
     setWordsCompletedForLetter(0);
     setHintKey(null);
@@ -229,6 +241,14 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
     mins: number;
     sequence: { letter: string; words: string[] }[];
   }) => {
+    if (nextLetterTimeoutRef.current) {
+      clearTimeout(nextLetterTimeoutRef.current);
+      nextLetterTimeoutRef.current = null;
+    }
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
     sharedSequenceRef.current = params.sequence;
     sequenceRoundIdxRef.current = 0;
     customLetterCursorRef.current = 0;
@@ -251,7 +271,9 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
     sequenceRoundIdxRef.current = 1;
     setCurrentLetter(firstItem.letter);
     setLetterWordsPool(firstItem.words);
+    currentWordRef.current = firstItem.words[0];
     setCurrentWord(firstItem.words[0]);
+    typedCharsRef.current = '';
     setTypedChars('');
     setWordsCompletedForLetter(0);
     setHintKey(null);
@@ -317,21 +339,23 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
     launchSprintSession
   ]);
 
-  // Publish settings changes from Host to Guest while in setup
+  // Publish settings changes from Host to Guest ONLY while in setup screen (not when finishing a round)
   useEffect(() => {
-    if (isCoopRoomActive && isCoopHost && !isPlaying) {
+    if (isCoopRoomActive && isCoopHost && !isPlaying && !isFinished) {
       onPublishCoopConfig?.(
         {
           mode: 'letter_sprint',
           sprintSubMode,
           sprintSelectedLetters: selectedLetters,
           sprintWordsPerLetter: wordsPerLetter,
-          sprintMinutesLimit: minutesLimit
+          sprintMinutesLimit: minutesLimit,
+          sprintSequence: undefined,
+          sprintStartedAt: undefined
         },
         false
       );
     }
-  }, [isCoopRoomActive, isCoopHost, sprintSubMode, selectedLetters, wordsPerLetter, minutesLimit, isPlaying]);
+  }, [isCoopRoomActive, isCoopHost, sprintSubMode, selectedLetters, wordsPerLetter, minutesLimit]);
 
   // Sync Guest settings and round start when Host publishes config
   useEffect(() => {
@@ -339,16 +363,18 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
     if (coopSharedConfig.configId && coopSharedConfig.configId !== appliedConfigIdRef.current) {
       appliedConfigIdRef.current = coopSharedConfig.configId;
       const nextSub = coopSharedConfig.sprintSubMode || 'random';
-      const nextLetters = coopSharedConfig.sprintSelectedLetters || ['А', 'О', 'Д'];
+      const nextLetters = coopSharedConfig.sprintSelectedLetters || ['А'];
       const nextWords = coopSharedConfig.sprintWordsPerLetter || 5;
       const nextMins = coopSharedConfig.sprintMinutesLimit || 5;
 
-      setSprintSubMode(nextSub);
-      setSelectedLetters(nextLetters);
-      setWordsPerLetter(nextWords);
-      setMinutesLimit(nextMins);
-
-      if (coopSharedConfig.sprintSequence && coopSharedConfig.sprintSequence.length > 0 && coopSharedConfig.sprintStartedAt) {
+      // Only launch a new sprint session if Host explicitly started a new round with a new sprintStartedAt timestamp
+      if (
+        coopSharedConfig.sprintSequence &&
+        coopSharedConfig.sprintSequence.length > 0 &&
+        coopSharedConfig.sprintStartedAt &&
+        coopSharedConfig.sprintStartedAt !== lastStartedSprintAtRef.current
+      ) {
+        lastStartedSprintAtRef.current = coopSharedConfig.sprintStartedAt;
         launchSprintSession({
           subMode: nextSub,
           letters: nextLetters,
@@ -356,20 +382,32 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
           mins: nextMins,
           sequence: coopSharedConfig.sprintSequence
         });
+      } else if (!isPlaying && !isFinished) {
+        setSprintSubMode(nextSub);
+        setSelectedLetters(nextLetters);
+        setWordsPerLetter(nextWords);
+        setMinutesLimit(nextMins);
       }
     }
-  }, [isCoopRoomActive, isCoopHost, coopSharedConfig, launchSprintSession]);
+  }, [isCoopRoomActive, isCoopHost, coopSharedConfig, launchSprintSession, isPlaying, isFinished]);
 
-  // Also allow Host's "Начать игру" button in CoopBar to start the sprint
+  // Also allow Host's "Начать игру" button in CoopBar to start the sprint (only when coopRoundTrigger increments)
   useEffect(() => {
-    if (coopRoundTrigger > 0 && isCoopRoomActive && isCoopHost) {
-      startGame();
+    if (coopRoundTrigger > prevRoundTriggerRef.current) {
+      prevRoundTriggerRef.current = coopRoundTrigger;
+      if (isCoopRoomActive && isCoopHost) {
+        startGame();
+      }
     }
-  }, [coopRoundTrigger]);
+  }, [coopRoundTrigger, isCoopRoomActive, isCoopHost, startGame]);
 
   // Stop / Finish game session
   const finishGame = useCallback(() => {
     const finishNow = Date.now();
+    if (nextLetterTimeoutRef.current) {
+      clearTimeout(nextLetterTimeoutRef.current);
+      nextLetterTimeoutRef.current = null;
+    }
     setIsPlaying(false);
     setIsFinished(true);
     if (timerRef.current) clearInterval(timerRef.current);
@@ -400,23 +438,34 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
     onAddXp(earnedXp);
   }, [soundEnabled, totalWordsCompleted, lettersMastered.length, minutesLimit, onAddXp, onUpdateCoopSelfProgress]);
 
-  // Countdown timer effect
+  const finishGameRef = useRef(finishGame);
+  finishGameRef.current = finishGame;
+
+  // Accurate wall-clock countdown timer effect (does not reset interval when words are typed)
   useEffect(() => {
     if (isPlaying && !isFinished) {
+      const totalSec = minutesLimit * 60;
       timerRef.current = setInterval(() => {
-        setRemainingSeconds(prev => {
-          if (prev <= 1) {
-            finishGame();
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+        const left = Math.max(0, totalSec - elapsed);
+        setRemainingSeconds(left);
+        if (left <= 0) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          finishGameRef.current();
+        }
+      }, 250);
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isPlaying, isFinished, finishGame]);
+  }, [isPlaying, isFinished, minutesLimit]);
+
+  // If in Co-op mode and the partner's timer finishes while our timer is at the end (<= 2s), finish together cleanly
+  useEffect(() => {
+    if (isCoopRoomActive && isPlaying && !isFinished && coopPartner?.isFinished && remainingSeconds <= 2) {
+      finishGameRef.current();
+    }
+  }, [isCoopRoomActive, isPlaying, isFinished, coopPartner?.isFinished, remainingSeconds]);
 
   // Hint key
   useEffect(() => {
@@ -432,12 +481,13 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
   const handleWordComplete = useCallback(() => {
     if (soundEnabled) playCorrectBeep();
 
+    const activeWord = currentWordRef.current;
     const newWordsOnLetter = wordsCompletedForLetter + 1;
     const newTotal = totalWordsCompleted + 1;
     setTotalWordsCompleted(newTotal);
-    onWordCompleted?.(1, currentWord.length);
+    onWordCompleted?.(1, activeWord.length);
 
-    const elapsedSec = Math.max(1, minutesLimit * 60 - remainingSeconds);
+    const elapsedSec = Math.max(1, Math.floor((Date.now() - startTimeRef.current) / 1000));
     const liveWpm = Math.round((newTotal / elapsedSec) * 60);
 
     if (newWordsOnLetter >= wordsPerLetter) {
@@ -478,9 +528,12 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
       });
 
       // Pick next letter (from shared sequence or local mode)
-      setTimeout(() => {
+      if (nextLetterTimeoutRef.current) {
+        clearTimeout(nextLetterTimeoutRef.current);
+      }
+      nextLetterTimeoutRef.current = setTimeout(() => {
         pickNewLetter(currentLetter);
-      }, 300);
+      }, 220);
     } else {
       setWordsCompletedForLetter(newWordsOnLetter);
       onUpdateCoopSelfProgress?.({
@@ -491,8 +544,10 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
         cpm: liveWpm * 5,
         elapsedSeconds: elapsedSec
       });
-      const nextWord = letterWordsPool[newWordsOnLetter % letterWordsPool.length] || currentWord;
+      const nextWord = letterWordsPool[newWordsOnLetter % letterWordsPool.length] || activeWord;
+      currentWordRef.current = nextWord;
       setCurrentWord(nextWord);
+      typedCharsRef.current = '';
       setTypedChars('');
       setHintKey(null);
     }
@@ -503,9 +558,6 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
     wordsPerLetter, 
     currentLetter, 
     letterWordsPool, 
-    currentWord, 
-    minutesLimit,
-    remainingSeconds,
     lettersMastered.length,
     pickNewLetter,
     onWordCompleted,
@@ -514,41 +566,51 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
     onUpdateCoopSelfProgress
   ]);
 
-  // Handle character input
-  const handleCharInput = useCallback((char: string) => {
-    if (!isPlaying || isFinished || !currentWord) return;
+  // Handle character input (uses ref-backed word/chars and supports Russian layout fallback)
+  const handleCharInput = useCallback((char: string, keyCode?: string) => {
+    const activeWord = currentWordRef.current;
+    const activeTyped = typedCharsRef.current;
+    if (!isPlaying || isFinished || !activeWord) return;
+    if (activeTyped.length >= activeWord.length) return;
 
-    const nextExpected = currentWord[typedChars.length];
-    const upperInput = char.toUpperCase();
-
-    const isMatch =
-      upperInput === nextExpected ||
-      (nextExpected === 'Ё' && upperInput === 'Е');
-
-    if (isMatch) {
+    const nextExpected = activeWord[activeTyped.length];
+    if (matchesRussianTypedChar(char, nextExpected, keyCode)) {
       setHintKey(null);
-      const newTyped = typedChars + nextExpected;
+      const newTyped = activeTyped + nextExpected;
+      typedCharsRef.current = newTyped;
       setTypedChars(newTyped);
 
-      if (newTyped === currentWord) {
+      if (newTyped === activeWord) {
         handleWordComplete();
       }
     } else {
       if (soundEnabled) playErrorTone();
       setErrorsCount(prev => prev + 1);
     }
-  }, [isPlaying, isFinished, currentWord, typedChars, handleWordComplete, soundEnabled]);
+  }, [isPlaying, isFinished, handleWordComplete, soundEnabled]);
 
   // Physical keyboard listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!isPlaying) return;
+      const activeEl = document.activeElement;
+      if (activeEl && activeEl.tagName === 'INPUT') {
+        return;
+      }
       if (e.key === 'Escape') {
+        e.preventDefault();
         setIsPlaying(false);
         return;
       }
+      if (e.key === 'Enter' || e.key === ' ') {
+        if (activeEl instanceof HTMLButtonElement) {
+          activeEl.blur();
+        }
+        e.preventDefault();
+        return;
+      }
       if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        handleCharInput(e.key);
+        handleCharInput(e.key, e.code);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -627,7 +689,7 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
             <p className="text-xs text-slate-500 max-w-lg">
               {sprintSubMode === 'random'
                 ? 'Котик случайно загадывает букву из алфавита. Напечатай заданное число слов на эту букву, чтобы открыть следующую!'
-                : 'Выбери одну или несколько букв из алфавита (например: А, О, Д). Слова на выбранные буквы будут гоняться по кругу всё время таймера!'}
+                : 'Выбери одну или несколько букв из алфавита. Слова на выбранные буквы будут гоняться по кругу всё время таймера!'}
             </p>
 
             {/* Sub-Mode Switcher (Подразделы буквенного спринта) */}
@@ -693,13 +755,6 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
               {/* Quick Preset Buttons */}
               {canChangeSettings && (
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedLetters(['А', 'О', 'Д'])}
-                    className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-white hover:bg-amber-100 text-amber-900 border border-amber-200 transition shadow-2xs"
-                  >
-                    Пример: А, О, Д
-                  </button>
                   <button
                     type="button"
                     onClick={() => setSelectedLetters([...VOWEL_LETTERS])}

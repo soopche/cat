@@ -548,3 +548,62 @@ export const SPORT_EXERCISES: SportExercise[] = [
 export const getSportExerciseGrammar = (count: number, exercise: SportExercise): string => {
   return `${count} ${exercise.genitiveSingular}`;
 };
+
+const EN_CHAR_TO_RU_MAP: Record<string, string> = {
+  q: 'Й', w: 'Ц', e: 'У', r: 'К', t: 'Е', y: 'Н', u: 'Г', i: 'Ш', o: 'Щ', p: 'З', '[': 'Х', '{': 'Х', ']': 'Ъ', '}': 'Ъ',
+  a: 'Ф', s: 'Ы', d: 'В', f: 'А', g: 'П', h: 'Р', j: 'О', k: 'Л', l: 'Д', ';': 'Ж', ':': 'Ж', "'": 'Э', '"': 'Э',
+  z: 'Я', x: 'Ч', c: 'С', v: 'М', b: 'И', n: 'Т', m: 'Ь', ',': 'Б', '<': 'Б', '.': 'Ю', '>': 'Ю', '`': 'Ё', '~': 'Ё'
+};
+
+const KEYCODE_TO_RU_MAP: Record<string, string> = {
+  KeyQ: 'Й', KeyW: 'Ц', KeyE: 'У', KeyR: 'К', KeyT: 'Е', KeyY: 'Н', KeyU: 'Г', KeyI: 'Ш', KeyO: 'Щ', KeyP: 'З', BracketLeft: 'Х', BracketRight: 'Ъ',
+  KeyA: 'Ф', KeyS: 'Ы', KeyD: 'В', KeyF: 'А', KeyG: 'П', KeyH: 'Р', KeyJ: 'О', KeyK: 'Л', KeyL: 'Д', Semicolon: 'Ж', Quote: 'Э',
+  KeyZ: 'Я', KeyX: 'Ч', KeyC: 'С', KeyV: 'М', KeyB: 'И', KeyN: 'Т', KeyM: 'Ь', Comma: 'Б', Period: 'Ю', Backquote: 'Ё'
+};
+
+export function matchesRussianTypedChar(
+  inputChar: string,
+  expectedChar: string,
+  keyCode?: string
+): boolean {
+  if (!inputChar || !expectedChar) return false;
+  if (expectedChar === ' ' && inputChar === ' ') return true;
+
+  const upperInput = inputChar.toUpperCase();
+  const upperExpected = expectedChar.toUpperCase();
+
+  if (upperInput === upperExpected) return true;
+  if (
+    (upperExpected === 'Ё' && upperInput === 'Е') ||
+    (upperExpected === 'Е' && upperInput === 'Ё')
+  ) {
+    return true;
+  }
+
+  // Fallback when OS keyboard layout is accidentally set to English while typing a Russian letter
+  if (/^[А-ЯЁ]$/.test(upperExpected)) {
+    const mappedFromChar = EN_CHAR_TO_RU_MAP[inputChar.toLowerCase()];
+    if (mappedFromChar) {
+      if (mappedFromChar === upperExpected) return true;
+      if (
+        (upperExpected === 'Ё' && mappedFromChar === 'Е') ||
+        (upperExpected === 'Е' && mappedFromChar === 'Ё')
+      ) {
+        return true;
+      }
+    }
+    if (keyCode && KEYCODE_TO_RU_MAP[keyCode]) {
+      const mappedFromCode = KEYCODE_TO_RU_MAP[keyCode];
+      if (mappedFromCode === upperExpected) return true;
+      if (
+        (upperExpected === 'Ё' && mappedFromCode === 'Е') ||
+        (upperExpected === 'Е' && mappedFromCode === 'Ё')
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+

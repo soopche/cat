@@ -73,6 +73,9 @@ export interface VoiceChunkPacket {
   senderName: string;
   senderRole: RoomParticipantRole;
   chunkId: string;
+  format?: 'pcm_s16le' | 'blob';
+  sampleRate?: number;
+  pcmBase64?: string;
   mimeType: string;
   audioBase64: string;
   timestamp: number;
@@ -358,7 +361,7 @@ export class MqttCoopRoomManager {
           }
         } else if (topic.endsWith('/voice')) {
           const chunk = parsed as VoiceChunkPacket;
-          if (!chunk || !chunk.audioBase64 || chunk.senderId === this.selfState.playerId) return;
+          if (!chunk || (!chunk.pcmBase64 && !chunk.audioBase64) || chunk.senderId === this.selfState.playerId) return;
           this.callbacks.onVoiceChunk?.(chunk);
         }
       } catch {

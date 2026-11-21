@@ -313,6 +313,8 @@ export default function App() {
   const [coopSessionRewardSec, setCoopSessionRewardSec] = useState<number>(0);
   const [recentCompletedWords, setRecentCompletedWords] = useState<string[]>([]);
   const [isMicTalking, setIsMicTalking] = useState<boolean>(false);
+  const [micVolumePercent, setMicVolumePercent] = useState<number>(0);
+  const [isReceivingPartnerAudio, setIsReceivingPartnerAudio] = useState<boolean>(false);
   const [micError, setMicError] = useState<string | null>(null);
   const [activeTeacherNotification, setActiveTeacherNotification] = useState<TeacherNotificationBannerItem | null>(null);
 
@@ -973,6 +975,8 @@ export default function App() {
       voiceCommRef.current = null;
     }
     setIsMicTalking(false);
+    setMicVolumePercent(0);
+    setIsReceivingPartnerAudio(false);
     setMicError(null);
     setActiveTeacherNotification(null);
     if (matchmakingCleanupRef.current) {
@@ -999,6 +1003,8 @@ export default function App() {
       voiceCommRef.current = null;
     }
     setIsMicTalking(false);
+    setMicVolumePercent(0);
+    setIsReceivingPartnerAudio(false);
     setMicError(null);
     setActiveTeacherNotification(null);
 
@@ -1065,7 +1071,11 @@ export default function App() {
 
     setCoopPlayers([initialSelfState]);
 
-    voiceCommRef.current = new LiveVoiceCommunicator();
+    const voiceComm = new LiveVoiceCommunicator();
+    voiceComm.unlockAudioNow();
+    voiceComm.setLevelListener((lvl) => setMicVolumePercent(lvl));
+    voiceComm.setReceivingListener((rec) => setIsReceivingPartnerAudio(rec));
+    voiceCommRef.current = voiceComm;
 
     const manager = new MqttCoopRoomManager(code, initialSelfState, {
       onPlayersChange: (playersList) => {
@@ -1630,6 +1640,8 @@ export default function App() {
           onJoinStudentRoom={handleJoinStudentRoom}
           onLeaveStudyRoom={handleLeaveCoopRoom}
           isMicTalking={isMicTalking}
+          micVolumePercent={micVolumePercent}
+          isReceivingPartnerAudio={isReceivingPartnerAudio}
           micError={micError}
           onToggleMic={handleToggleStudyMic}
           onSendTeacherNotification={handleSendTeacherNotification}

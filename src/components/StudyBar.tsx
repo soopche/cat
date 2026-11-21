@@ -54,6 +54,8 @@ interface StudyBarProps {
   onLeaveStudyRoom: () => void;
   // Live voice (Alt + 3)
   isMicTalking: boolean;
+  micVolumePercent?: number;
+  isReceivingPartnerAudio?: boolean;
   micError: string | null;
   onToggleMic: () => void;
   // Teacher actions
@@ -137,6 +139,8 @@ export const StudyBar: React.FC<StudyBarProps> = ({
   onJoinStudentRoom,
   onLeaveStudyRoom,
   isMicTalking,
+  micVolumePercent = 0,
+  isReceivingPartnerAudio = false,
   micError,
   onToggleMic,
   onSendTeacherNotification,
@@ -373,21 +377,30 @@ export const StudyBar: React.FC<StudyBarProps> = ({
                       e.currentTarget.blur();
                       onToggleMic();
                     }}
-                    className={`px-3.5 py-1.5 rounded-xl font-black text-xs transition flex items-center gap-1.5 shadow-md cursor-pointer ${
+                    className={`px-3.5 py-1.5 rounded-xl font-black text-xs transition flex items-center gap-2 shadow-md cursor-pointer ${
                       isMicTalking
-                        ? 'bg-rose-500 hover:bg-rose-600 text-white ring-2 ring-amber-300 animate-pulse'
+                        ? 'bg-rose-500 hover:bg-rose-600 text-white ring-2 ring-amber-300'
                         : 'bg-amber-400 hover:bg-amber-300 text-slate-950'
                     }`}
                     title="Живая голосовая связь как по телефону (горячая клавиша Alt + 3)"
                   >
                     {isMicTalking ? (
                       <>
-                        <Mic className="w-4 h-4 animate-bounce" />
-                        <span>Микрофон ВКЛ — Говоришь в эфир (Alt + 3)</span>
+                        <Mic className="w-4 h-4 animate-bounce shrink-0" />
+                        <span>Микрофон ВКЛ — В эфире (Alt + 3)</span>
+                        <span
+                          className="w-12 h-2.5 bg-rose-950/60 rounded-full overflow-hidden border border-white/30 inline-flex items-center"
+                          title={`Уровень твоего голоса: ${micVolumePercent}%`}
+                        >
+                          <span
+                            className="h-full bg-gradient-to-r from-emerald-300 via-amber-300 to-white rounded-full transition-all duration-75"
+                            style={{ width: `${Math.max(12, micVolumePercent)}%` }}
+                          />
+                        </span>
                       </>
                     ) : (
                       <>
-                        <MicOff className="w-4 h-4" />
+                        <MicOff className="w-4 h-4 shrink-0" />
                         <span>
                           {isTeacher
                             ? '🎙️ Говорить ученику (Alt + 3)'
@@ -397,14 +410,14 @@ export const StudyBar: React.FC<StudyBarProps> = ({
                     )}
                   </button>
 
-                  {/* Live indicator when the OTHER participant is talking on the microphone */}
-                  {partner?.isVoiceTalking && (
+                  {/* Live indicator when the OTHER participant is talking or audio packets are arriving */}
+                  {(partner?.isVoiceTalking || isReceivingPartnerAudio) && (
                     <span className="px-3 py-1.5 rounded-xl bg-rose-500/90 border border-amber-200 text-white font-black text-xs flex items-center gap-1.5 animate-pulse shadow">
                       <Volume2 className="w-4 h-4" />
                       <span>
                         {isTeacher
-                          ? `🔊 Ученик (${partner.name}) говорит в микрофон...`
-                          : `🔊 Учитель (${partner.name}) говорит... Слушай!`}
+                          ? `🔊 Ученик (${partner?.name || 'Ребёнок'}) говорит в микрофон...`
+                          : `🔊 Учитель (${partner?.name || 'Учитель'}) говорит... Слушай!`}
                       </span>
                     </span>
                   )}

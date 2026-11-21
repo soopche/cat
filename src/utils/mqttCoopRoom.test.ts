@@ -129,3 +129,39 @@ test('determineCoopWinner accurately determines winner across speed_text, word_g
   const s2: CoopPlayerState = { ...p2, mode: 'letter_sprint', isFinished: true, wordsCompleted: 25, lettersMastered: 5 };
   assert.equal(determineCoopWinner(s1, s2), 'partner');
 });
+
+import {
+  downsampleFloat32ToInt16,
+  int16ToBase64,
+  base64ToFloat32Pcm,
+  computePcmLevelPercent,
+  TARGET_PCM_SAMPLE_RATE,
+} from './liveVoiceChat';
+
+test('WebAudio PCM voice encoder/decoder works identically across iPad, Android tablets, and desktop PCs without MediaRecorder codecs', () => {
+  // Simulate 48kHz microphone buffer with a 440Hz sine wave
+  const inputRate = 48000;
+  const inputSamples = new Float32Array(4800); // 100ms at 48kHz
+  for (let i = 0; i < inputSamples.length; i++) {
+    inputSamples[i] = Math.sin((2 * Math.PI * 440 * i) / inputRate) * 0.5;
+  }
+
+  const downsampledInt16 = downsampleFloat32ToInt16(inputSamples, inputRate, TARGET_PCM_SAMPLE_RATE);
+  assert.equal(downsampledInt16.length, 800); // 100ms at 8kHz
+
+  const levelPct = computePcmLevelPercent(downsampledInt16);
+  assert.ok(levelPct > 20 && levelPct <= 100);
+
+  const b64 = int16ToBase64(downsampledInt16);
+  assert.ok(b64.length > 100);
+
+  const decodedFloat32 = base64ToFloat32Pcm(b64);
+  assert.equal(decodedFloat32.length, downsampledInt16.length);
+
+  // Verify signal integrity after round-trip
+  for (let i = 0; i < 20; i++) {
+    const expected = downsampledInt16[i] / (downsampledInt16[i] < 0 ? 0x8000 : 0x7fff);
+    assert.ok(Math.abs(decodedFloat32[i] - expected) < 0.001);
+  }
+});
+

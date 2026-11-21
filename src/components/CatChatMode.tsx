@@ -400,6 +400,42 @@ export const CatChatMode: React.FC<CatChatModeProps> = ({
     }
   };
 
+  // Speak the latest message in the dialog (regardless of whether it is from user, friend, or cat)
+  const handleSpeakLastMessage = useCallback(() => {
+    if (isCoopRoomActive) {
+      const lastCoopMsg = coopChatMessages[coopChatMessages.length - 1];
+      if (lastCoopMsg?.text) {
+        speakRussianText(lastCoopMsg.text);
+        return;
+      }
+      if (inputValue.trim()) {
+        speakRussianText(inputValue.trim());
+      }
+      return;
+    }
+
+    const lastSoloMsg = messages[messages.length - 1];
+    if (lastSoloMsg?.text) {
+      speakRussianText(lastSoloMsg.text);
+      return;
+    }
+    if (inputValue.trim()) {
+      speakRussianText(inputValue.trim());
+    }
+  }, [isCoopRoomActive, coopChatMessages, messages, inputValue]);
+
+  // Global hotkey Alt + 1 in CatChatMode: speak the last message (mine, friend's, or cat's)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === '1' || e.code === 'Digit1')) {
+        e.preventDefault();
+        handleSpeakLastMessage();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleSpeakLastMessage]);
+
   // Determine active suggestions and cat tip when in Co-op Friend Chat mode
   const lastPartnerMessage = isCoopRoomActive
     ? [...coopChatMessages].reverse().find(m => m.senderId !== selfPlayerId)?.text
@@ -410,7 +446,7 @@ export const CatChatMode: React.FC<CatChatModeProps> = ({
   return (
     <div translate="no" className="notranslate w-full max-w-4xl flex flex-col items-center gap-3">
       {/* Top Banner with Cat Helper and Info */}
-      <div className="w-full bg-white/95 rounded-2xl shadow-sm border border-slate-200 p-3 sm:p-4 flex items-center justify-between gap-3">
+      <div className="w-full bg-white/95 rounded-2xl shadow-sm border border-slate-200 p-3 sm:p-4 flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
           <div className="w-12 h-12 flex-shrink-0 flex items-center justify-center">
             <CatAvatar
@@ -452,16 +488,31 @@ export const CatChatMode: React.FC<CatChatModeProps> = ({
           </div>
         </div>
 
-        {/* Clear History Button */}
-        <button
-          type="button"
-          onClick={handleClearHistory}
-          className="p-2.5 text-slate-400 hover:text-rose-600 rounded-xl hover:bg-rose-50 transition border border-transparent hover:border-rose-200 flex items-center gap-1"
-          title="Очистить переписку"
-        >
-          <Trash2 className="w-4 h-4" />
-          <span className="text-xs font-bold hidden sm:inline">Очистить</span>
-        </button>
+        {/* Speak Last Message (Alt + 1) & Clear History Buttons */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              handleSpeakLastMessage();
+            }}
+            className="px-3 py-2 text-purple-700 bg-purple-50 hover:bg-purple-100 rounded-xl transition border border-purple-200 flex items-center gap-1.5 text-xs font-bold shadow-2xs cursor-pointer"
+            title="Озвучить последнее сообщение (Alt + 1)"
+          >
+            <Volume2 className="w-4 h-4 text-purple-600" />
+            <span>Озвучить (Alt + 1)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleClearHistory}
+            className="p-2.5 text-slate-400 hover:text-rose-600 rounded-xl hover:bg-rose-50 transition border border-transparent hover:border-rose-200 flex items-center gap-1"
+            title="Очистить переписку"
+          >
+            <Trash2 className="w-4 h-4" />
+            <span className="text-xs font-bold hidden sm:inline">Очистить</span>
+          </button>
+        </div>
       </div>
 
       {/* Chat Messages Feed (Co-op Friend Chat vs Solo Cat Chat) */}
@@ -503,16 +554,18 @@ export const CatChatMode: React.FC<CatChatModeProps> = ({
                     </div>
                     <div className="flex items-start justify-between gap-3">
                       <span className="break-words">{msg.text}</span>
-                      {!isSelf && soundEnabled && (
-                        <button
-                          type="button"
-                          onClick={() => speakRussianText(msg.text)}
-                          className="text-slate-400 hover:text-indigo-600 p-1 rounded-lg hover:bg-slate-200/70 transition flex-shrink-0"
-                          title="Озвучить сообщение друга"
-                        >
-                          <Volume2 className="w-4 h-4" />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => speakRussianText(msg.text)}
+                        className={`p-1 rounded-lg transition flex-shrink-0 cursor-pointer ${
+                          isSelf
+                            ? 'text-white/80 hover:text-white hover:bg-white/20'
+                            : 'text-slate-400 hover:text-indigo-600 hover:bg-slate-200/70'
+                        }`}
+                        title={isSelf ? 'Озвучить моё сообщение' : 'Озвучить сообщение друга'}
+                      >
+                        <Volume2 className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
 
@@ -548,16 +601,18 @@ export const CatChatMode: React.FC<CatChatModeProps> = ({
                 >
                   <div className="flex items-start justify-between gap-3">
                     <span className="break-words">{msg.text}</span>
-                    {!isUser && soundEnabled && (
-                      <button
-                        type="button"
-                        onClick={() => speakRussianText(msg.text)}
-                        className="text-slate-400 hover:text-purple-600 p-1 rounded-lg hover:bg-slate-200/70 transition flex-shrink-0"
-                        title="Озвучить ответ котика"
-                      >
-                        <Volume2 className="w-4 h-4" />
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => speakRussianText(msg.text)}
+                      className={`p-1 rounded-lg transition flex-shrink-0 cursor-pointer ${
+                        isUser
+                          ? 'text-white/80 hover:text-white hover:bg-white/20'
+                          : 'text-slate-400 hover:text-purple-600 hover:bg-slate-200/70'
+                      }`}
+                      title={isUser ? 'Озвучить моё сообщение' : 'Озвучить ответ котика'}
+                    >
+                      <Volume2 className="w-4 h-4" />
+                    </button>
                   </div>
                 </div>
 
@@ -619,6 +674,17 @@ export const CatChatMode: React.FC<CatChatModeProps> = ({
           }
           className="flex-1 px-4 py-2 text-sm sm:text-base border-0 focus:outline-none bg-transparent font-medium text-slate-800 placeholder-slate-400"
         />
+
+        {inputValue.trim().length > 0 && (
+          <button
+            type="button"
+            onClick={() => speakRussianText(inputValue.trim())}
+            className="p-2.5 text-purple-600 hover:bg-purple-50 rounded-xl transition flex items-center gap-1 border border-purple-200 cursor-pointer"
+            title="Озвучить набранный свой текст"
+          >
+            <Volume2 className="w-4 h-4" />
+          </button>
+        )}
 
         <button
           type="submit"

@@ -137,7 +137,7 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
   const [lettersMastered, setLettersMastered] = useState<string[]>([]);
   const [remainingSeconds, setRemainingSeconds] = useState<number>(300);
   const [hintKey, setHintKey] = useState<string | null>(null);
-  const [, setErrorsCount] = useState<number>(0);
+  const [errorsCount, setErrorsCount] = useState<number>(0);
   const [hasSaved, setHasSaved] = useState<boolean>(false);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -589,10 +589,28 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
     }
   }, [isPlaying, isFinished, handleWordComplete, soundEnabled]);
 
-  // Physical keyboard listener
+  // Sync live target word and typed chars for Teacher Study Mode
+  useEffect(() => {
+    if (!onUpdateCoopSelfProgress || !currentWord) return;
+    onUpdateCoopSelfProgress({
+      mode: 'letter_sprint',
+      currentTargetWord: currentWord,
+      currentTypedText: typedChars,
+      errorsCount
+    });
+  }, [currentWord, typedChars, errorsCount, onUpdateCoopSelfProgress]);
+
+  // Physical keyboard listener (includes Alt + 1 to speak current word)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!isPlaying) return;
+      if (e.altKey && (e.key === '1' || e.code === 'Digit1')) {
+        e.preventDefault();
+        if (currentWordRef.current) {
+          speakRussianText(currentWordRef.current);
+        }
+        return;
+      }
       const activeEl = document.activeElement;
       if (activeEl && activeEl.tagName === 'INPUT') {
         return;
@@ -1007,21 +1025,26 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
               })}
             </div>
 
-            <div className="flex items-center gap-3 mt-2">
+            <div className="flex items-center gap-3 mt-2 flex-wrap justify-center">
               <span className="text-xs text-slate-400 font-medium">
                 Слоги: <b className="text-slate-600">{formatSyllables(currentWord)}</b>
               </span>
 
-              {soundEnabled && (
-                <button
-                  type="button"
-                  onClick={() => speakRussianText(currentWord)}
-                  className="p-1.5 rounded-full hover:bg-purple-50 text-purple-600 transition"
-                  title="Озвучить слово"
-                >
-                  <Volume2 className="w-4 h-4" />
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  speakRussianText(currentWord);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+                }}
+                className="px-3 py-1.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 transition flex items-center gap-1.5 text-xs font-bold shadow-2xs cursor-pointer"
+                title="Озвучить слово (Alt + 1)"
+              >
+                <Volume2 className="w-4 h-4 text-purple-600" />
+                <span>Озвучить слово (Alt + 1)</span>
+              </button>
             </div>
 
             {/* Letter Progress Dots */}

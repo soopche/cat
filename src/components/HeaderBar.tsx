@@ -15,7 +15,8 @@ import {
   BookmarkCheck,
   MessageCircle,
   Shirt,
-  Users
+  Users,
+  GraduationCap
 } from 'lucide-react';
 import { AppMode, CatLevel } from '../types';
 import { getCatXpProgressInfo } from '../data/quests';
@@ -46,6 +47,10 @@ interface HeaderBarProps {
   coopRoomCode?: string | null;
   coopPlayersCount?: number;
   onToggleCoop?: () => void;
+  isStudyOpen?: boolean;
+  studyRoomCode?: string | null;
+  studyRole?: 'player' | 'teacher' | 'student';
+  onToggleStudy?: () => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -72,7 +77,11 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   isCoopOpen = false,
   coopRoomCode = null,
   coopPlayersCount = 1,
-  onToggleCoop
+  onToggleCoop,
+  isStudyOpen = false,
+  studyRoomCode = null,
+  studyRole = 'player',
+  onToggleStudy
 }) => {
   const formatTimerClock = (seconds: number) => {
     const m = Math.floor(seconds / 60);
@@ -226,13 +235,37 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
         {/* User Auth & Quick Actions */}
         <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+          {/* Study Mode Button (Teacher & Student live tracking, notifications, chat & Alt+3 phone mic) */}
+          {onToggleStudy && (
+            <button
+              type="button"
+              onClick={onToggleStudy}
+              data-testid="study-mode-button"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black transition shadow-sm border active:scale-95 ${
+                studyRoomCode && (studyRole === 'teacher' || studyRole === 'student')
+                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white border-emerald-700 ring-2 ring-emerald-300'
+                  : isStudyOpen
+                  ? 'bg-emerald-600 text-white border-emerald-700'
+                  : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200'
+              }`}
+              title="Режим Учёба: учитель следит за прогрессом ученика, шлёт уведомления, общается в чате и по микрофону (Alt + 3)"
+            >
+              <GraduationCap className="w-4 h-4" />
+              <span>
+                {studyRoomCode && (studyRole === 'teacher' || studyRole === 'student')
+                  ? `Учёба (${studyRoomCode} • ${studyRole === 'teacher' ? 'Учитель' : 'Ученик'})`
+                  : 'Учёба'}
+              </span>
+            </button>
+          )}
+
           {/* Co-op Multiplayer Button (strictly lazy: connects only when user clicks it!) */}
           {onToggleCoop && (
             <button
               type="button"
               onClick={onToggleCoop}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black transition shadow-sm border active:scale-95 ${
-                coopRoomCode
+                coopRoomCode && studyRole === 'player'
                   ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white border-indigo-700 ring-2 ring-purple-300'
                   : isCoopOpen
                   ? 'bg-indigo-600 text-white border-indigo-700'
@@ -242,7 +275,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             >
               <Users className="w-4 h-4" />
               <span>
-                {coopRoomCode
+                {coopRoomCode && studyRole === 'player'
                   ? `Кооператив (${coopRoomCode} • ${coopPlayersCount})`
                   : 'Кооператив'}
               </span>

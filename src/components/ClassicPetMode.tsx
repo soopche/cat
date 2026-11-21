@@ -44,6 +44,7 @@ import {
 import { CatAvatar } from './CatAvatar';
 import { VirtualKeyboard } from './VirtualKeyboard';
 import { PetStats, CatLevel, CatAction, CatLetter } from '../types';
+import { CoopPlayerState } from '../utils/mqttCoopRoom';
 import { 
   playCorrectBeep, 
   playErrorTone, 
@@ -73,10 +74,12 @@ interface ClassicPetModeProps {
   rewardSeconds: number;
   sessionWordCount: number;
   onIncrementSessionWordCount: () => void;
-  onWordCompleted?: (wordsCount?: number, charLength?: number, meta?: { category?: string; activityType?: string }) => void;
+  onWordCompleted?: (wordsCount?: number, charLength?: number, meta?: { category?: string; activityType?: string; completedWord?: string }) => void;
   questAnnounceMessage?: string | null;
   onClearQuestAnnounce?: () => void;
   onUnlockAchievement?: (id: string) => void;
+  isStudyRoomActive?: boolean;
+  onUpdateCoopSelfProgress?: (patch: Partial<CoopPlayerState>) => void;
 }
 
 export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
@@ -101,7 +104,9 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
   onWordCompleted,
   questAnnounceMessage,
   onClearQuestAnnounce,
-  onUnlockAchievement
+  onUnlockAchievement,
+  isStudyRoomActive = false,
+  onUpdateCoopSelfProgress
 }) => {
   const [currentWord, setCurrentWord] = useState<string>('');
   const [currentCategory, setCurrentCategory] = useState<string>('COMMANDS');
@@ -564,7 +569,11 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
 
     // Notify word completion for reward timer and achievements
     if (onWordCompleted) {
-      onWordCompleted(1, currentWord.length, { category: currentCategory, activityType });
+      onWordCompleted(1, currentWord.length, {
+        category: currentCategory,
+        activityType,
+        completedWord: currentWord
+      });
     } else if (isRewardMode) {
       const rewardBonus = currentWord.length >= 6 ? 15 : 12;
       onAddRewardSeconds(rewardBonus);
@@ -703,6 +712,18 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
     }
   }, [isRecording, currentWord, soundEnabled]);
 
+  // Sync live target word and typed letters to Teacher in Study Mode
+  useEffect(() => {
+    if (!onUpdateCoopSelfProgress || !currentWord) return;
+    const pct = Math.min(100, Math.round((typedChars.length / Math.max(1, currentWord.length)) * 100));
+    onUpdateCoopSelfProgress({
+      mode: 'classic_pet',
+      currentTargetWord: currentWord,
+      currentTypedText: typedChars,
+      progressPercent: pct,
+    });
+  }, [currentWord, typedChars, onUpdateCoopSelfProgress]);
+
   // Physical keyboard & Hotkeys (Alt+1..Alt+4)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -720,7 +741,7 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
           if (message) playCustomOrSpeech(message);
           return;
         }
-        if (e.key === '3' || e.code === 'Digit3') {
+        if ((e.key === '3' || e.code === 'Digit3') && !isStudyRoomActive) {
           e.preventDefault();
           handleRecordToggle();
           return;
@@ -764,7 +785,8 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
     currentWord, 
     typedChars, 
     message, 
-    handleRecordToggle
+    handleRecordToggle,
+    isStudyRoomActive
   ]);
 
   const getStatColor = (val: number) => {

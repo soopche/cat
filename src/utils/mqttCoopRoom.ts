@@ -9,12 +9,14 @@ export const TOPIC_NAMESPACE = 'vox-arcanum-game-2026/typecat';
 export const HEARTBEAT_INTERVAL_MS = 500;
 export const PLAYER_TIMEOUT_MS = 3000;
 
-export type CoopActiveMode = 'speed_text' | 'word_goal' | 'letter_sprint' | 'cat_chat';
+export type CoopActiveMode = 'classic_pet' | 'speed_text' | 'word_goal' | 'letter_sprint' | 'cat_chat';
+export type RoomParticipantRole = 'player' | 'teacher' | 'student';
 
 export interface CoopPlayerState {
   playerId: string;
   name: string;
   isHost: boolean;
+  role?: RoomParticipantRole;
   color: 'orange' | 'blue';
   mode: CoopActiveMode;
   // Live race / game progress
@@ -30,6 +32,19 @@ export interface CoopPlayerState {
   // Co-op session reward stats
   sessionWordsTotal: number;
   rewardSecondsTotal: number;
+  // Study / Teacher monitoring telemetry
+  currentTargetWord?: string;
+  currentTypedText?: string;
+  errorsCount?: number;
+  catLevel?: string;
+  xp?: number;
+  dailyWordsTyped?: number;
+  totalWordsTyped?: number;
+  completedQuestsCount?: number;
+  learnedLettersCount?: number;
+  learnedLettersList?: string;
+  recentCompletedWords?: string[];
+  isVoiceTalking?: boolean;
   updatedAt: number;
 }
 
@@ -51,6 +66,18 @@ export interface CoopGameConfig {
   sprintStartedAt?: number;
 }
 
+export type TeacherNotificationTone = 'hurry' | 'praise' | 'attention' | 'task';
+
+export interface VoiceChunkPacket {
+  senderId: string;
+  senderName: string;
+  senderRole: RoomParticipantRole;
+  chunkId: string;
+  mimeType: string;
+  audioBase64: string;
+  timestamp: number;
+}
+
 export type CoopRoomEvent =
   | {
       type: 'sync_config';
@@ -70,6 +97,16 @@ export type CoopRoomEvent =
       senderName: string;
       messageId: string;
       text: string;
+      timestamp: number;
+    }
+  | {
+      type: 'teacher_notification';
+      senderId: string;
+      senderName: string;
+      notificationId: string;
+      text: string;
+      tone: TeacherNotificationTone;
+      speakAloud: boolean;
       timestamp: number;
     }
   | {
@@ -109,6 +146,10 @@ export function getPlayerStateTopic(roomCode: string, playerId: string): string 
 
 export function getRoomEventsTopic(roomCode: string): string {
   return `${TOPIC_NAMESPACE}/room/${roomCode}/events`;
+}
+
+export function getRoomVoiceTopic(roomCode: string): string {
+  return `${TOPIC_NAMESPACE}/room/${roomCode}/voice`;
 }
 
 export function getMatchmakingTopic(): string {
@@ -182,6 +223,7 @@ export function determineCoopWinner(
 export interface MqttCoopRoomCallbacks {
   onPlayersChange: (players: CoopPlayerState[]) => void;
   onEvent: (event: CoopRoomEvent) => void;
+  onVoiceChunk?: (chunk: VoiceChunkPacket) => void;
   onConnectionChange: (status: 'connecting' | 'connected' | 'disconnected', brokerUrl?: string) => void;
 }
 
@@ -314,6 +356,10 @@ export class MqttCoopRoomManager {
           if (ev.senderId !== this.selfState.playerId) {
             this.callbacks.onEvent(ev);
           }
+        } else if (topic.endsWith('/voice')) {
+          const chunk = parsed as VoiceChunkPacket;
+          if (!chunk || !chunk.audioBase64 || chunk.senderId === this.selfState.playerId) return;
+          this.callbacks.onVoiceChunk?.(chunk);
         }
       } catch {
         // Ignore malformed packets
@@ -362,6 +408,12 @@ export class MqttCoopRoomManager {
     if (this.isDestroyed || !this.client || !this.client.connected) return;
     const topic = getRoomEventsTopic(this.roomCode);
     this.client.publish(topic, JSON.stringify(event), { qos: 0, retain: false });
+  }
+
+  public publishVoiceChunk(chunk: VoiceChunkPacket): void {
+    if (this.isDestroyed || !this.client || !this.client.connected) return;
+    const topic = getRoomVoiceTopic(this.roomCode);
+    this.client.publish(topic, JSON.stringify(chunk), { qos: 0, retain: false });
   }
 
   private emitPlayers(): void {

@@ -9,6 +9,7 @@ import {
   getRoomWildcardTopic,
   getPlayerStateTopic,
   getRoomEventsTopic,
+  getRoomVoiceTopic,
   getOrCreateSessionPlayerId,
   pruneStalePlayers,
   determineCoopWinner,
@@ -37,6 +38,7 @@ test('MQTT topic structure uses vox-arcanum-game-2026/typecat/room/XX/... and EM
   assert.equal(getRoomWildcardTopic('79'), `${TOPIC_NAMESPACE}/room/79/#`);
   assert.equal(getPlayerStateTopic('79', 'p_123'), `${TOPIC_NAMESPACE}/room/79/player/p_123`);
   assert.equal(getRoomEventsTopic('79'), `${TOPIC_NAMESPACE}/room/79/events`);
+  assert.equal(getRoomVoiceTopic('79'), `${TOPIC_NAMESPACE}/room/79/voice`);
 });
 
 test('getOrCreateSessionPlayerId persists and reuses sessionStorage ID', () => {

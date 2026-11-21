@@ -473,9 +473,29 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
     }
   }, [isFinished, currentWord, startTime, soundEnabled, nextWord, onWordCompleted]);
 
+  // Sync live target word and typed chars for Teacher Study Mode
+  useEffect(() => {
+    if (!onUpdateCoopSelfProgress || !currentWord) return;
+    onUpdateCoopSelfProgress({
+      mode: 'word_goal',
+      currentTargetWord: currentWord,
+      currentTypedText: typedChars,
+      errorsCount
+    });
+  }, [currentWord, typedChars, errorsCount, onUpdateCoopSelfProgress]);
+
   // Physical keyboard listener: strictly block Enter and Space from triggering focused buttons!
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === '1' || e.code === 'Digit1')) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (currentWord) {
+          speakRussianText(currentWord);
+        }
+        return;
+      }
+
       const activeEl = document.activeElement;
       if (
         activeEl &&
@@ -859,27 +879,26 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
             })}
           </div>
 
-          <div className="flex items-center gap-3 mt-2">
+          <div className="flex items-center gap-3 mt-2 flex-wrap justify-center">
             <span translate="no" className="notranslate text-xs text-slate-400 font-medium">
               Слоги: <b className="text-slate-600">{formatSyllables(currentWord)}</b>
             </span>
 
-            {soundEnabled && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.currentTarget.blur();
-                  speakRussianText(currentWord);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
-                }}
-                className="p-1.5 rounded-full hover:bg-emerald-50 text-emerald-600 transition"
-                title="Озвучить слово"
-              >
-                <Volume2 className="w-4 h-4" />
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.currentTarget.blur();
+                speakRussianText(currentWord);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+              }}
+              className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition flex items-center gap-1.5 text-xs font-bold shadow-2xs cursor-pointer"
+              title="Озвучить слово (Alt + 1)"
+            >
+              <Volume2 className="w-4 h-4 text-emerald-600" />
+              <span>Озвучить слово (Alt + 1)</span>
+            </button>
           </div>
         </div>
       )}

@@ -21,6 +21,10 @@ import {
 import {
   CoopBar
 } from './components/CoopBar';
+import {
+  StudyBar,
+  TeacherNotificationBannerItem
+} from './components/StudyBar';
 import { 
   LeaderboardModal 
 } from './components/LeaderboardModal';
@@ -76,10 +80,14 @@ import {
   CoopGameConfig,
   CoopRoomEvent,
   CoopActiveMode,
+  RoomParticipantRole,
+  TeacherNotificationTone,
+  VoiceChunkPacket,
   generateTwoDigitRoomCode,
   getOrCreateSessionPlayerId,
   findOrCreateRandomRoom
 } from './utils/mqttCoopRoom';
+import { LiveVoiceCommunicator } from './utils/liveVoiceChat';
 import { Play, Pause, StopCircle } from 'lucide-react';
 
 const LOCAL_SAVE_KEY = 'typecat_save_v32';
@@ -288,9 +296,11 @@ export default function App() {
   const [isRewardTimerActive, setIsRewardTimerActive] = useState<boolean>(false);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
 
-  // Lazy MQTT Co-op Multiplayer State (100% idle until user clicks "Кооператив")
+  // Lazy MQTT Co-op & Study Multiplayer State (100% idle until user clicks "Кооператив" or "Учёба")
   const selfPlayerId = useMemo(() => getOrCreateSessionPlayerId(), []);
   const [isCoopOpen, setIsCoopOpen] = useState<boolean>(false);
+  const [isStudyOpen, setIsStudyOpen] = useState<boolean>(false);
+  const [roomRole, setRoomRole] = useState<RoomParticipantRole>('player');
   const [coopRoomCode, setCoopRoomCode] = useState<string | null>(null);
   const [isCoopHost, setIsCoopHost] = useState<boolean>(false);
   const [coopConnectionStatus, setCoopConnectionStatus] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
@@ -301,11 +311,18 @@ export default function App() {
   const [coopChatMessages, setCoopChatMessages] = useState<CoopChatMessageItem[]>([]);
   const [coopSessionWords, setCoopSessionWords] = useState<number>(0);
   const [coopSessionRewardSec, setCoopSessionRewardSec] = useState<number>(0);
+  const [recentCompletedWords, setRecentCompletedWords] = useState<string[]>([]);
+  const [isMicTalking, setIsMicTalking] = useState<boolean>(false);
+  const [micError, setMicError] = useState<string | null>(null);
+  const [activeTeacherNotification, setActiveTeacherNotification] = useState<TeacherNotificationBannerItem | null>(null);
 
   const roomManagerRef = useRef<MqttCoopRoomManager | null>(null);
+  const voiceCommRef = useRef<LiveVoiceCommunicator | null>(null);
   const matchmakingCleanupRef = useRef<(() => void) | null>(null);
   const isCoopHostRef = useRef<boolean>(false);
   isCoopHostRef.current = isCoopHost;
+  const roomRoleRef = useRef<RoomParticipantRole>('player');
+  roomRoleRef.current = roomRole;
   const coopSharedConfigRef = useRef<CoopGameConfig | null>(null);
   coopSharedConfigRef.current = coopSharedConfig;
   const soundEnabledRef = useRef<boolean>(soundEnabled);
@@ -823,12 +840,16 @@ export default function App() {
   const handleWordCompletedInAnyMode = useCallback((
     wordsCount: number = 1,
     charLength?: number,
-    meta?: { category?: string; activityType?: string }
+    meta?: { category?: string; activityType?: string; completedWord?: string }
   ) => {
     typedInCurrentSessionRef.current = true;
     const todayStr = getTodayLocalDateString();
     setWordsTypedCount(c => c + wordsCount);
     setStatsDate(todayStr);
+
+    if (meta?.completedWord) {
+      setRecentCompletedWords(prev => [...prev.slice(-11), meta.completedWord!]);
+    }
 
     setQuestCounters(prev => {
       const sameDay = prev.dailyDate === todayStr;
@@ -875,7 +896,7 @@ export default function App() {
       setRewardSeconds(s => s + earnedSeconds);
     }
 
-    // Also update Co-op session counters & publish to partner if in an active room
+    // Also update Co-op / Study session counters & publish to partner if in an active room
     setCoopSessionWords(prevWords => {
       const nextWords = prevWords + wordsCount;
       setCoopSessionRewardSec(prevSec => {
@@ -892,9 +913,13 @@ export default function App() {
     });
   }, [isRewardMode]);
 
-  // Clean up Co-op room on component unmount
+  // Clean up Co-op / Study room and voice communicator on component unmount
   useEffect(() => {
     return () => {
+      if (voiceCommRef.current) {
+        voiceCommRef.current.destroy();
+        voiceCommRef.current = null;
+      }
       if (matchmakingCleanupRef.current) {
         matchmakingCleanupRef.current();
         matchmakingCleanupRef.current = null;
@@ -906,16 +931,50 @@ export default function App() {
     };
   }, []);
 
-  // Keep player display name synced into active Co-op room
+  // Keep player display name and overall study progress synced into active room
   useEffect(() => {
     if (roomManagerRef.current) {
-      const effectiveName =
-        playerName.trim() || user?.displayName || (isCoopHost ? 'Хост-Котик' : 'Друг-Котик');
-      roomManagerRef.current.updateSelfState({ name: effectiveName });
+      const defaultRoleName =
+        roomRole === 'teacher' ? 'Учитель' : roomRole === 'student' ? 'Ученик' : isCoopHost ? 'Хост-Котик' : 'Друг-Котик';
+      const effectiveName = playerName.trim() || user?.displayName || defaultRoleName;
+      const learnedList = parseLearnedAlphabetLetters(questCounters.learnedAlphabetLetters);
+      const completedQuestsCount = achievements.filter(a => a.isUnlocked).length;
+
+      roomManagerRef.current.updateSelfState({
+        name: effectiveName,
+        role: roomRole,
+        catLevel: level,
+        xp,
+        dailyWordsTyped: questCounters.dailyWords,
+        totalWordsTyped: questCounters.totalWords,
+        completedQuestsCount,
+        learnedLettersCount: learnedList.length,
+        learnedLettersList: learnedList.join(', '),
+        recentCompletedWords,
+      });
     }
-  }, [playerName, user, isCoopHost]);
+  }, [
+    playerName,
+    user,
+    isCoopHost,
+    roomRole,
+    level,
+    xp,
+    questCounters.dailyWords,
+    questCounters.totalWords,
+    questCounters.learnedAlphabetLetters,
+    achievements,
+    recentCompletedWords,
+  ]);
 
   const handleLeaveCoopRoom = useCallback(() => {
+    if (voiceCommRef.current) {
+      voiceCommRef.current.destroy();
+      voiceCommRef.current = null;
+    }
+    setIsMicTalking(false);
+    setMicError(null);
+    setActiveTeacherNotification(null);
     if (matchmakingCleanupRef.current) {
       matchmakingCleanupRef.current();
       matchmakingCleanupRef.current = null;
@@ -927,12 +986,22 @@ export default function App() {
     setIsMatchmaking(false);
     setCoopRoomCode(null);
     setIsCoopHost(false);
+    setRoomRole('player');
+    roomRoleRef.current = 'player';
     setCoopConnectionStatus('idle');
     setCoopPlayers([]);
     setCoopSharedConfig(null);
   }, []);
 
-  const joinOrCreateCoopRoom = useCallback((code: string, asHost: boolean) => {
+  const joinOrCreateCoopRoom = useCallback((code: string, asHost: boolean, role: RoomParticipantRole = 'player') => {
+    if (voiceCommRef.current) {
+      voiceCommRef.current.destroy();
+      voiceCommRef.current = null;
+    }
+    setIsMicTalking(false);
+    setMicError(null);
+    setActiveTeacherNotification(null);
+
     if (matchmakingCleanupRef.current) {
       matchmakingCleanupRef.current();
       matchmakingCleanupRef.current = null;
@@ -946,23 +1015,30 @@ export default function App() {
     setCoopRoomCode(code);
     setIsCoopHost(asHost);
     isCoopHostRef.current = asHost;
+    setRoomRole(role);
+    roomRoleRef.current = role;
     setCoopConnectionStatus('connecting');
     setCoopChatMessages([]);
 
-    // Co-op works in all tabs except classic_pet; switch to speed_text if currently on classic_pet
-    const activeCoopMode: CoopActiveMode =
-      currentMode === 'classic_pet' ? 'speed_text' : currentMode;
-    if (currentMode === 'classic_pet') {
+    // In regular Co-op ('player'), switch off classic_pet to speed_text.
+    // In Study Mode ('teacher' | 'student'), allow ALL modes including classic_pet!
+    let activeCoopMode: CoopActiveMode = currentMode;
+    if (role === 'player' && currentMode === 'classic_pet') {
+      activeCoopMode = 'speed_text';
       setCurrentMode('speed_text');
     }
 
-    const effectiveName =
-      playerName.trim() || user?.displayName || (asHost ? 'Хост-Котик' : 'Друг-Котик');
+    const defaultRoleName =
+      role === 'teacher' ? 'Учитель' : role === 'student' ? 'Ученик' : asHost ? 'Хост-Котик' : 'Друг-Котик';
+    const effectiveName = playerName.trim() || user?.displayName || defaultRoleName;
+    const learnedList = parseLearnedAlphabetLetters(questCounters.learnedAlphabetLetters);
+    const completedQuestsCount = achievements.filter(a => a.isUnlocked).length;
 
     const initialSelfState: CoopPlayerState = {
       playerId: selfPlayerId,
       name: effectiveName,
       isHost: asHost,
+      role,
       color: asHost ? 'orange' : 'blue',
       mode: activeCoopMode,
       progressPercent: 0,
@@ -975,10 +1051,21 @@ export default function App() {
       isFinished: false,
       sessionWordsTotal: coopSessionWords,
       rewardSecondsTotal: isRewardMode ? rewardSeconds : coopSessionRewardSec,
+      catLevel: level,
+      xp,
+      dailyWordsTyped: questCounters.dailyWords,
+      totalWordsTyped: questCounters.totalWords,
+      completedQuestsCount,
+      learnedLettersCount: learnedList.length,
+      learnedLettersList: learnedList.join(', '),
+      recentCompletedWords,
+      isVoiceTalking: false,
       updatedAt: Date.now(),
     };
 
     setCoopPlayers([initialSelfState]);
+
+    voiceCommRef.current = new LiveVoiceCommunicator();
 
     const manager = new MqttCoopRoomManager(code, initialSelfState, {
       onPlayersChange: (playersList) => {
@@ -986,6 +1073,9 @@ export default function App() {
       },
       onConnectionChange: (status) => {
         setCoopConnectionStatus(status);
+      },
+      onVoiceChunk: (chunk: VoiceChunkPacket) => {
+        voiceCommRef.current?.enqueueIncomingChunk(chunk, soundEnabledRef.current);
       },
       onEvent: (ev: CoopRoomEvent) => {
         if (ev.type === 'sync_config' || ev.type === 'start_round') {
@@ -1024,6 +1114,24 @@ export default function App() {
           if (soundEnabledRef.current) {
             playCorrectBeep();
           }
+        } else if (ev.type === 'teacher_notification') {
+          setActiveTeacherNotification({
+            id: ev.notificationId,
+            senderName: ev.senderName,
+            text: ev.text,
+            tone: ev.tone,
+            timestamp: ev.timestamp,
+          });
+          if (soundEnabledRef.current) {
+            if (ev.tone === 'praise') {
+              playSuccessFanfare();
+            } else {
+              playAlarmBeep();
+            }
+            if (ev.speakAloud) {
+              speakRussianText(ev.text);
+            }
+          }
         }
       },
     });
@@ -1039,16 +1147,102 @@ export default function App() {
     isRewardMode,
     rewardSeconds,
     coopSessionRewardSec,
+    questCounters.learnedAlphabetLetters,
+    questCounters.dailyWords,
+    questCounters.totalWords,
+    achievements,
+    level,
+    xp,
+    recentCompletedWords,
   ]);
 
   const handleCreateCoopRoom = useCallback(() => {
     const newCode = generateTwoDigitRoomCode();
-    joinOrCreateCoopRoom(newCode, true);
+    joinOrCreateCoopRoom(newCode, true, 'player');
   }, [joinOrCreateCoopRoom]);
 
   const handleJoinCoopRoom = useCallback((code: string) => {
-    joinOrCreateCoopRoom(code.trim(), false);
+    joinOrCreateCoopRoom(code.trim(), false, 'player');
   }, [joinOrCreateCoopRoom]);
+
+  const handleCreateTeacherRoom = useCallback(() => {
+    const newCode = generateTwoDigitRoomCode();
+    joinOrCreateCoopRoom(newCode, true, 'teacher');
+  }, [joinOrCreateCoopRoom]);
+
+  const handleJoinStudentRoom = useCallback((code: string) => {
+    joinOrCreateCoopRoom(code.trim(), false, 'student');
+  }, [joinOrCreateCoopRoom]);
+
+  const handleToggleStudyMic = useCallback(async () => {
+    if (!roomManagerRef.current || !voiceCommRef.current) return;
+    setMicError(null);
+    if (voiceCommRef.current.isMicActive()) {
+      voiceCommRef.current.stopTalking((talking) => {
+        setIsMicTalking(talking);
+        roomManagerRef.current?.updateSelfState({ isVoiceTalking: talking });
+      });
+    } else {
+      const defaultRoleName =
+        roomRoleRef.current === 'teacher' ? 'Учитель' : roomRoleRef.current === 'student' ? 'Ученик' : 'Игрок';
+      const effectiveName = playerName.trim() || user?.displayName || defaultRoleName;
+      await voiceCommRef.current.startTalking({
+        senderId: selfPlayerId,
+        senderName: effectiveName,
+        senderRole: roomRoleRef.current,
+        onChunk: (chunk) => {
+          roomManagerRef.current?.publishVoiceChunk(chunk);
+        },
+        onStateChange: (talking, errMsg) => {
+          setIsMicTalking(talking);
+          roomManagerRef.current?.updateSelfState({ isVoiceTalking: talking });
+          if (errMsg) {
+            setMicError(errMsg);
+          }
+        },
+      });
+    }
+  }, [playerName, user, selfPlayerId]);
+
+  // Global Alt + 3 shortcut in Study Mode for both Teacher and Student live voice communication ("как по телефону")
+  useEffect(() => {
+    const isStudyActive = Boolean(coopRoomCode) && (roomRole === 'teacher' || roomRole === 'student');
+    if (!isStudyActive) return;
+
+    const handleGlobalStudyKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === '3' || e.code === 'Digit3')) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleToggleStudyMic();
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalStudyKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalStudyKeyDown);
+  }, [coopRoomCode, roomRole, handleToggleStudyMic]);
+
+  const handleSendTeacherNotification = useCallback(
+    (text: string, tone: TeacherNotificationTone, speakAloud: boolean) => {
+      if (!roomManagerRef.current) return;
+      const cleaned = text.trim();
+      if (!cleaned) return;
+      const effectiveName = playerName.trim() || user?.displayName || 'Учитель';
+      roomManagerRef.current.publishEvent({
+        type: 'teacher_notification',
+        senderId: selfPlayerId,
+        senderName: effectiveName,
+        notificationId: `tnotif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        text: cleaned,
+        tone,
+        speakAloud,
+        timestamp: Date.now(),
+      });
+      if (soundEnabledRef.current) {
+        playCorrectBeep();
+      }
+    },
+    [playerName, user, selfPlayerId]
+  );
 
   const handleFindRandomCoopPlayer = useCallback(() => {
     if (isMatchmaking) return;
@@ -1056,7 +1250,7 @@ export default function App() {
     const effectiveName = playerName.trim() || user?.displayName || 'Котик-Игрок';
     const cleanup = findOrCreateRandomRoom(selfPlayerId, effectiveName, (matchedCode, asHost) => {
       matchmakingCleanupRef.current = null;
-      joinOrCreateCoopRoom(matchedCode, asHost);
+      joinOrCreateCoopRoom(matchedCode, asHost, 'player');
     });
     matchmakingCleanupRef.current = cleanup;
   }, [isMatchmaking, playerName, user, selfPlayerId, joinOrCreateCoopRoom]);
@@ -1064,10 +1258,12 @@ export default function App() {
   const handlePublishCoopConfig = useCallback(
     (partialConfig: Partial<CoopGameConfig>, startRound: boolean = false) => {
       if (!roomManagerRef.current || !isCoopHostRef.current) return;
+      const fallbackMode: CoopActiveMode =
+        roomRoleRef.current === 'player' && currentMode === 'classic_pet' ? 'speed_text' : currentMode;
       const baseMode: CoopActiveMode =
         partialConfig.mode ||
         coopSharedConfigRef.current?.mode ||
-        (currentMode === 'classic_pet' ? 'speed_text' : currentMode);
+        fallbackMode;
 
       const nextConfig: CoopGameConfig = {
         ...(coopSharedConfigRef.current || {}),
@@ -1098,6 +1294,14 @@ export default function App() {
   }, []);
 
   const handleUpdateCoopSelfProgress = useCallback((patch: Partial<CoopPlayerState>) => {
+    if (patch.currentTargetWord && patch.currentTypedText && patch.currentTypedText === patch.currentTargetWord) {
+      const completed = patch.currentTargetWord.trim();
+      if (completed && completed.length <= 24) {
+        setRecentCompletedWords(prev =>
+          prev[prev.length - 1] === completed ? prev : [...prev.slice(-11), completed]
+        );
+      }
+    }
     if (!roomManagerRef.current) return;
     roomManagerRef.current.updateSelfState(patch);
   }, []);
@@ -1106,8 +1310,9 @@ export default function App() {
     (text: string) => {
       const cleaned = text.trim();
       if (!cleaned) return;
-      const effectiveName =
-        playerName.trim() || user?.displayName || (isCoopHost ? 'Хост-Котик' : 'Друг-Котик');
+      const defaultRoleName =
+        roomRole === 'teacher' ? 'Учитель' : roomRole === 'student' ? 'Ученик' : isCoopHost ? 'Хост-Котик' : 'Друг-Котик';
+      const effectiveName = playerName.trim() || user?.displayName || defaultRoleName;
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
       const timestamp = Date.now();
 
@@ -1133,13 +1338,13 @@ export default function App() {
         });
       }
     },
-    [playerName, user, isCoopHost, selfPlayerId]
+    [playerName, user, isCoopHost, roomRole, selfPlayerId]
   );
 
   const handleSelectMode = useCallback(
     (nextMode: AppMode) => {
       setCurrentMode(nextMode);
-      if (roomManagerRef.current && nextMode !== 'classic_pet') {
+      if (roomManagerRef.current && (nextMode !== 'classic_pet' || roomRoleRef.current !== 'player')) {
         roomManagerRef.current.updateSelfState({
           mode: nextMode,
           progressPercent: 0,
@@ -1158,6 +1363,7 @@ export default function App() {
     [coopPlayers, selfPlayerId]
   );
   const isCoopRoomActive = Boolean(coopRoomCode);
+  const isStudyRoomActive = Boolean(coopRoomCode) && (roomRole === 'teacher' || roomRole === 'student');
 
   const handleSpeedTextCompleted = useCallback((wpm: number, accuracy: number) => {
     const todayStr = getTodayLocalDateString();
@@ -1354,7 +1560,7 @@ export default function App() {
 
       {/* Main App Layout */}
       <div className="w-full max-w-7xl flex flex-col items-center">
-        {/* Header Bar with Quests, Wardrobe, and Co-op triggers */}
+        {/* Header Bar with Quests, Wardrobe, Study Mode, and Co-op triggers */}
         <HeaderBar
           currentMode={currentMode}
           onSelectMode={handleSelectMode}
@@ -1380,22 +1586,69 @@ export default function App() {
           coopRoomCode={coopRoomCode}
           coopPlayersCount={Math.max(1, coopPlayers.length)}
           onToggleCoop={() => {
+            if (isStudyOpen && !isStudyRoomActive) {
+              setIsStudyOpen(false);
+            }
             if (isCoopOpen && !coopRoomCode) {
               setIsCoopOpen(false);
             } else {
               setIsCoopOpen(true);
             }
           }}
+          isStudyOpen={isStudyOpen}
+          studyRoomCode={coopRoomCode}
+          studyRole={roomRole}
+          onToggleStudy={() => {
+            if (isCoopOpen && !coopRoomCode) {
+              setIsCoopOpen(false);
+            }
+            if (isStudyOpen && !isStudyRoomActive) {
+              setIsStudyOpen(false);
+            } else {
+              setIsStudyOpen(true);
+            }
+          }}
+        />
+
+        {/* Study Mode Bar (Teacher & Student live tracking, notifications, chat & two-way Alt+3 phone mic) */}
+        <StudyBar
+          isOpen={isStudyOpen || isStudyRoomActive}
+          onCloseStudy={() => {
+            if (isStudyRoomActive) {
+              handleLeaveCoopRoom();
+            }
+            setIsStudyOpen(false);
+          }}
+          roomCode={isStudyRoomActive ? coopRoomCode : null}
+          studyRole={roomRole}
+          connectionStatus={coopConnectionStatus}
+          players={coopPlayers}
+          selfId={selfPlayerId}
+          playerName={playerName}
+          onChangePlayerName={setPlayerName}
+          onCreateTeacherRoom={handleCreateTeacherRoom}
+          onJoinStudentRoom={handleJoinStudentRoom}
+          onLeaveStudyRoom={handleLeaveCoopRoom}
+          isMicTalking={isMicTalking}
+          micError={micError}
+          onToggleMic={handleToggleStudyMic}
+          onSendTeacherNotification={handleSendTeacherNotification}
+          onSwitchStudentMode={(mode) => handleSelectMode(mode)}
+          onStartStudentRound={handleStartCoopRoundFromBar}
+          chatMessages={coopChatMessages}
+          onSendChatMessage={handleSendCoopChatMessage}
+          activeNotification={activeTeacherNotification}
+          onDismissNotification={() => setActiveTeacherNotification(null)}
         />
 
         {/* Lazy Co-op Multiplayer Bar (MQTT over WebSockets - connects only when user creates/joins a room) */}
         <CoopBar
-          isOpen={isCoopOpen}
+          isOpen={isCoopOpen && !isStudyRoomActive}
           onCloseCoop={() => {
             handleLeaveCoopRoom();
             setIsCoopOpen(false);
           }}
-          roomCode={coopRoomCode}
+          roomCode={roomRole === 'player' ? coopRoomCode : null}
           isHost={isCoopHost}
           connectionStatus={coopConnectionStatus}
           isMatchmaking={isMatchmaking}
@@ -1483,6 +1736,8 @@ export default function App() {
               questAnnounceMessage={questAnnounceMessage}
               onClearQuestAnnounce={() => setQuestAnnounceMessage(null)}
               onUnlockAchievement={unlockAchievement}
+              isStudyRoomActive={isStudyRoomActive}
+              onUpdateCoopSelfProgress={handleUpdateCoopSelfProgress}
             />
           )}
 

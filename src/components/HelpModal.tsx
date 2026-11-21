@@ -124,7 +124,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
           <div className="pt-2 border-t border-slate-200">
             <h4 className="font-bold text-slate-800 mb-2">Горячие клавиши (Hotkeys):</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-              <span className="bg-slate-100 p-2 rounded-xl font-mono text-slate-700"><b>Alt + 1</b>: Озвучить моё слово</span>
+              <span className="bg-slate-100 p-2 rounded-xl font-mono text-slate-700"><b>Alt + 1</b>: Озвучить слово / последнее сообщение в диалоге</span>
               <span className="bg-slate-100 p-2 rounded-xl font-mono text-slate-700"><b>Alt + 2</b>: Озвучить котика</span>
               <span className="bg-slate-100 p-2 rounded-xl font-mono text-slate-700"><b>Alt + 3</b>: Записать свой голос (микрофон)</span>
               <span className="bg-slate-100 p-2 rounded-xl font-mono text-slate-700"><b>Alt + 4</b>: Написать слово сначала</span>

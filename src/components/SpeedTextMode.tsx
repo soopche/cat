@@ -427,7 +427,10 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
         progressPercent: pct,
         wordsCompleted: wordsNow,
         wpm: liveWpm,
-        cpm: liveCpm
+        cpm: liveCpm,
+        currentTargetWord: targetText,
+        currentTypedText: nextTyped,
+        errorsCount: errorsCountRef.current
       });
     } else {
       if (soundEnabled) playErrorTone();
@@ -438,8 +441,23 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
       if (totalAttempts > 0) {
         setAccuracy(Math.round((currentTyped.length / totalAttempts) * 100));
       }
+      onUpdateCoopSelfProgress?.({
+        mode: 'speed_text',
+        errorsCount: nextErr
+      });
     }
   }, [isFinished, startTime, targetText, soundEnabled, completeTyping, onWordCompleted, onUpdateCoopSelfProgress]);
+
+  // Sync current target text and typed text for Teacher Study Mode
+  useEffect(() => {
+    if (!onUpdateCoopSelfProgress || !targetText) return;
+    onUpdateCoopSelfProgress({
+      mode: 'speed_text',
+      currentTargetWord: targetText,
+      currentTypedText: typedText,
+      errorsCount
+    });
+  }, [targetText, typedText, errorsCount, onUpdateCoopSelfProgress]);
 
   // Physical keyboard listener
   useEffect(() => {

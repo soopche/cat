@@ -11,7 +11,10 @@ import {
   Gift,
   X
 } from 'lucide-react';
-import { CoopPlayerState, isValidRoomCode } from '../utils/mqttCoopRoom';
+import {
+  CoopPlayerState,
+  isValidRoomCode
+} from '../utils/mqttCoopRoom';
 
 interface CoopBarProps {
   isOpen: boolean;
@@ -24,7 +27,7 @@ interface CoopBarProps {
   selfId: string;
   playerName: string;
   onChangePlayerName: (name: string) => void;
-  onCreateRoom: () => void;
+  onCreateRoom: () => string;
   onJoinRoom: (code: string) => void;
   onFindRandomPlayer: () => void;
   onLeaveRoom: () => void;
@@ -52,7 +55,7 @@ export const CoopBar: React.FC<CoopBarProps> = ({
 
   if (!isOpen) return null;
 
-  const partner = players.find(p => p.playerId !== selfId) || null;
+  const partner = players.find((p) => p.playerId !== selfId) || null;
   const playersCount = Math.max(1, players.length);
 
   const formatClock = (seconds: number) => {
@@ -72,10 +75,10 @@ export const CoopBar: React.FC<CoopBarProps> = ({
   return (
     <div
       translate="no"
-      className="notranslate w-full max-w-7xl bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-700 text-white rounded-2xl shadow-md border border-indigo-400/50 px-3.5 py-2.5 mb-2 flex flex-col gap-2 animate-fade-in"
+      className="notranslate w-full max-w-7xl bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-700 text-white rounded-2xl shadow-md border border-indigo-400/50 px-3.5 py-2 mb-2 flex flex-col gap-2 animate-fade-in"
     >
       {!roomCode ? (
-        /* Lobby Row: Create Room (2 digits), Join by 2-digit code, or Random Matchmaking */
+        /* Lobby Row: Create Room (2 digits), Join by 2-digit code, Random Matchmaking */
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="flex items-center gap-1.5 font-black text-xs sm:text-sm bg-white/15 px-2.5 py-1 rounded-xl">
@@ -95,9 +98,9 @@ export const CoopBar: React.FC<CoopBarProps> = ({
 
             <button
               type="button"
-              onClick={onCreateRoom}
+              onClick={() => onCreateRoom()}
               disabled={isMatchmaking}
-              className="px-3.5 py-1.5 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-black text-xs rounded-xl shadow-sm transition active:scale-95 flex items-center gap-1.5"
+              className="px-3.5 py-1.5 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-black text-xs rounded-xl shadow-sm transition active:scale-95 flex items-center gap-1.5 cursor-pointer"
             >
               <Crown className="w-3.5 h-3.5" />
               <span>Создать комнату</span>
@@ -117,7 +120,7 @@ export const CoopBar: React.FC<CoopBarProps> = ({
               <button
                 type="submit"
                 disabled={!isValidRoomCode(joinCodeInput) || isMatchmaking}
-                className="px-3 py-1.5 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-40 text-slate-950 font-black text-xs rounded-xl shadow-sm transition active:scale-95 flex items-center gap-1"
+                className="px-3 py-1.5 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-40 text-slate-950 font-black text-xs rounded-xl shadow-sm transition active:scale-95 flex items-center gap-1 cursor-pointer"
               >
                 <LogIn className="w-3.5 h-3.5" />
                 <span>Войти</span>
@@ -128,7 +131,7 @@ export const CoopBar: React.FC<CoopBarProps> = ({
               type="button"
               onClick={onFindRandomPlayer}
               disabled={isMatchmaking}
-              className="px-3 py-1.5 bg-white/20 hover:bg-white/30 disabled:opacity-50 text-white font-bold text-xs rounded-xl border border-white/30 transition active:scale-95 flex items-center gap-1.5"
+              className="px-3 py-1.5 bg-white/20 hover:bg-white/30 disabled:opacity-50 text-white font-bold text-xs rounded-xl border border-white/30 transition active:scale-95 flex items-center gap-1.5 cursor-pointer"
               title="Найти случайного напарника онлайн на сайте"
             >
               <Shuffle className="w-3.5 h-3.5 text-amber-300" />
@@ -139,7 +142,7 @@ export const CoopBar: React.FC<CoopBarProps> = ({
           <button
             type="button"
             onClick={onCloseCoop}
-            className="p-1.5 rounded-xl bg-white/10 hover:bg-rose-500/80 text-white/90 hover:text-white transition flex items-center gap-1 text-xs font-bold"
+            className="p-1.5 rounded-xl bg-white/10 hover:bg-rose-500/80 text-white/90 hover:text-white transition flex items-center gap-1 text-xs font-bold cursor-pointer"
             title="Выключить кооператив"
           >
             <X className="w-4 h-4" />
@@ -185,7 +188,7 @@ export const CoopBar: React.FC<CoopBarProps> = ({
               <button
                 type="button"
                 onClick={onStartCoopRound}
-                className="px-3.5 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs rounded-xl shadow-md transition transform hover:scale-105 active:scale-95 flex items-center gap-1.5"
+                className="px-3.5 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs rounded-xl shadow-md transition transform hover:scale-105 active:scale-95 flex items-center gap-1.5 cursor-pointer"
               >
                 <Play className="w-3.5 h-3.5 fill-current" />
                 <span>Начать игру</span>
@@ -195,9 +198,13 @@ export const CoopBar: React.FC<CoopBarProps> = ({
             {/* Partner Presence & Co-op Reward Summary */}
             {partner ? (
               <div className="flex items-center gap-2 bg-emerald-500/25 border border-emerald-300/40 px-3 py-1 rounded-xl text-xs font-bold">
-                <span>🐾 Друг: <b>{partner.name}</b></span>
+                <span>
+                  🐾 Друг: <b>{partner.name}</b>
+                </span>
                 <span className="text-emerald-200">|</span>
-                <span>Слов за сессию: <b>{partner.sessionWordsTotal}</b></span>
+                <span>
+                  Слов за сессию: <b>{partner.sessionWordsTotal}</b>
+                </span>
                 <span className="text-emerald-200">|</span>
                 <span className="flex items-center gap-1 text-amber-200">
                   <Gift className="w-3.5 h-3.5" />
@@ -206,7 +213,7 @@ export const CoopBar: React.FC<CoopBarProps> = ({
               </div>
             ) : (
               <span className="text-xs text-indigo-100 font-semibold bg-white/10 px-2.5 py-1 rounded-xl">
-                ⏳ Скажи другу код <b className="text-amber-300 font-mono">{roomCode}</b> для входа!
+                ⏳ Скажи другу код <b className="text-amber-300 font-mono">{roomCode}</b> или позови во вкладке «Общий чат»!
               </span>
             )}
           </div>
@@ -214,7 +221,7 @@ export const CoopBar: React.FC<CoopBarProps> = ({
           <button
             type="button"
             onClick={onLeaveRoom}
-            className="px-3 py-1 bg-rose-500/80 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1 shadow-2xs"
+            className="px-3 py-1 bg-rose-500/80 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1 shadow-2xs cursor-pointer"
           >
             <LogOut className="w-3.5 h-3.5" />
             <span>Выйти</span>

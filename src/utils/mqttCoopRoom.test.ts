@@ -135,10 +135,27 @@ import {
   int16ToBase64,
   base64ToFloat32Pcm,
   computePcmLevelPercent,
+  softLimitSample,
+  applyMicroDeclickFade,
   TARGET_PCM_SAMPLE_RATE,
 } from './liveVoiceChat';
+import {
+  getGlobalLobbyWildcardTopic,
+  getGlobalLobbyPlayerTopic,
+  getGlobalLobbyEventsTopic,
+} from './mqttCoopRoom';
 
-test('WebAudio PCM voice encoder/decoder works identically across iPad, Android tablets, and desktop PCs without MediaRecorder codecs', () => {
+test('WebAudio 16kHz wideband PCM voice encoder/decoder, soft-knee limiter, and Global Co-op Lobby topics', () => {
+  assert.equal(TARGET_PCM_SAMPLE_RATE, 16000);
+  assert.equal(getGlobalLobbyWildcardTopic(), `${TOPIC_NAMESPACE}/global_lobby/#`);
+  assert.equal(getGlobalLobbyPlayerTopic('p_99'), `${TOPIC_NAMESPACE}/global_lobby/player/p_99`);
+  assert.equal(getGlobalLobbyEventsTopic(), `${TOPIC_NAMESPACE}/global_lobby/events`);
+
+  // Soft-knee limiter prevents harsh clipping above ±1.0
+  assert.equal(softLimitSample(0.5), 0.5);
+  assert.ok(softLimitSample(2.5) < 1.0 && softLimitSample(2.5) > 0.9);
+  assert.ok(softLimitSample(-2.5) > -1.0 && softLimitSample(-2.5) < -0.9);
+
   // Simulate 48kHz microphone buffer with a 440Hz sine wave
   const inputRate = 48000;
   const inputSamples = new Float32Array(4800); // 100ms at 48kHz
@@ -147,7 +164,7 @@ test('WebAudio PCM voice encoder/decoder works identically across iPad, Android 
   }
 
   const downsampledInt16 = downsampleFloat32ToInt16(inputSamples, inputRate, TARGET_PCM_SAMPLE_RATE);
-  assert.equal(downsampledInt16.length, 800); // 100ms at 8kHz
+  assert.equal(downsampledInt16.length, 1600); // 100ms at 16kHz wideband
 
   const levelPct = computePcmLevelPercent(downsampledInt16);
   assert.ok(levelPct > 20 && levelPct <= 100);
@@ -163,5 +180,10 @@ test('WebAudio PCM voice encoder/decoder works identically across iPad, Android 
     const expected = downsampledInt16[i] / (downsampledInt16[i] < 0 ? 0x8000 : 0x7fff);
     assert.ok(Math.abs(decodedFloat32[i] - expected) < 0.001);
   }
+
+  // Micro declick fade smoothly ramps the first and last sample to 0
+  applyMicroDeclickFade(decodedFloat32, TARGET_PCM_SAMPLE_RATE);
+  assert.equal(decodedFloat32[0], 0);
 });
+
 

@@ -603,16 +603,29 @@ export const LetterSprintMode: React.FC<LetterSprintModeProps> = ({
   // Physical keyboard listener (includes Alt + 1 to speak current word)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const targetEl = e.target as HTMLElement | null;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (
+        (targetEl &&
+          (targetEl.tagName === 'INPUT' ||
+            targetEl.tagName === 'TEXTAREA' ||
+            targetEl.tagName === 'SELECT' ||
+            targetEl.isContentEditable)) ||
+        (activeEl &&
+          (activeEl.tagName === 'INPUT' ||
+            activeEl.tagName === 'TEXTAREA' ||
+            activeEl.tagName === 'SELECT' ||
+            activeEl.isContentEditable))
+      ) {
+        return;
+      }
+
       if (!isPlaying) return;
       if (e.altKey && (e.key === '1' || e.code === 'Digit1')) {
         e.preventDefault();
         if (currentWordRef.current) {
           speakRussianText(currentWordRef.current);
         }
-        return;
-      }
-      const activeEl = document.activeElement;
-      if (activeEl && activeEl.tagName === 'INPUT') {
         return;
       }
       if (e.key === 'Escape') {

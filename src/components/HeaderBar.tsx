@@ -47,6 +47,8 @@ interface HeaderBarProps {
   coopRoomCode?: string | null;
   coopPlayersCount?: number;
   onToggleCoop?: () => void;
+  showGlobalChatTab?: boolean;
+  hasGlobalChatBadge?: boolean;
   isStudyOpen?: boolean;
   studyRoomCode?: string | null;
   studyRole?: 'player' | 'teacher' | 'student';
@@ -78,6 +80,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   coopRoomCode = null,
   coopPlayersCount = 1,
   onToggleCoop,
+  showGlobalChatTab = false,
+  hasGlobalChatBadge = false,
   isStudyOpen = false,
   studyRoomCode = null,
   studyRole = 'player',
@@ -423,7 +427,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       </div>
 
       {/* Mode Navigation Bar */}
-      <div className="flex items-center gap-1.5 p-1 bg-slate-100/80 rounded-xl overflow-x-auto select-none">
+      <div className="flex items-center gap-1.5 p-1.5 bg-slate-100/80 rounded-xl overflow-x-auto select-none">
         
         <button
           type="button"
@@ -489,6 +493,32 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           <MessageCircle className="w-4 h-4 text-pink-500" />
           <span>{coopRoomCode ? 'Диалог с другом' : 'Диалог с котиком'}</span>
         </button>
+
+        {showGlobalChatTab && (
+          <button
+            type="button"
+            data-testid="global-chat-mode-tab"
+            onClick={() => onSelectMode('global_chat')}
+            className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-bold transition whitespace-nowrap ${
+              currentMode === 'global_chat'
+                ? 'bg-white text-indigo-700 shadow-sm border border-indigo-200'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+            }`}
+            title="Общий чат всех игроков в кооперативе для поиска друзей"
+          >
+            <Users className="w-4 h-4 text-indigo-500" />
+            <span>Общий чат</span>
+            {hasGlobalChatBadge && (
+              <span
+                data-testid="global-chat-green-badge"
+                className="absolute -top-1 -right-1 flex h-3 w-3"
+              >
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500 border-2 border-white"></span>
+              </span>
+            )}
+          </button>
+        )}
       </div>
     </header>
   );

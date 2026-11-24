@@ -3,7 +3,8 @@ export type AppMode =
   | 'speed_text' 
   | 'word_goal' 
   | 'letter_sprint' 
-  | 'cat_chat';
+  | 'cat_chat'
+  | 'global_chat';
 
 export type CatLevel = 
   | 'baby' 

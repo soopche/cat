@@ -487,21 +487,31 @@ export const WordGoalMode: React.FC<WordGoalModeProps> = ({
   // Physical keyboard listener: strictly block Enter and Space from triggering focused buttons!
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const targetEl = e.target as HTMLElement | null;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (
+        (targetEl &&
+          targetEl !== tabletInputRef.current &&
+          (targetEl.tagName === 'INPUT' ||
+            targetEl.tagName === 'TEXTAREA' ||
+            targetEl.tagName === 'SELECT' ||
+            targetEl.isContentEditable)) ||
+        (activeEl &&
+          activeEl !== tabletInputRef.current &&
+          (activeEl.tagName === 'INPUT' ||
+            activeEl.tagName === 'TEXTAREA' ||
+            activeEl.tagName === 'SELECT' ||
+            activeEl.isContentEditable))
+      ) {
+        return;
+      }
+
       if (e.altKey && (e.key === '1' || e.code === 'Digit1')) {
         e.preventDefault();
         e.stopPropagation();
         if (currentWord) {
           speakRussianText(currentWord);
         }
-        return;
-      }
-
-      const activeEl = document.activeElement;
-      if (
-        activeEl &&
-        activeEl.tagName === 'INPUT' &&
-        activeEl !== tabletInputRef.current
-      ) {
         return;
       }
 

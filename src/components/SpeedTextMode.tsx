@@ -463,8 +463,22 @@ export const SpeedTextMode: React.FC<SpeedTextModeProps> = ({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (showCustomModal) return;
-      const activeTag = document.activeElement?.tagName;
-      if (activeTag === 'TEXTAREA' || (activeTag === 'INPUT' && document.activeElement !== tabletInputRef.current)) {
+      const targetEl = e.target as HTMLElement | null;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (
+        (targetEl &&
+          targetEl !== tabletInputRef.current &&
+          (targetEl.tagName === 'INPUT' ||
+            targetEl.tagName === 'TEXTAREA' ||
+            targetEl.tagName === 'SELECT' ||
+            targetEl.isContentEditable)) ||
+        (activeEl &&
+          activeEl !== tabletInputRef.current &&
+          (activeEl.tagName === 'INPUT' ||
+            activeEl.tagName === 'TEXTAREA' ||
+            activeEl.tagName === 'SELECT' ||
+            activeEl.isContentEditable))
+      ) {
         return;
       }
 

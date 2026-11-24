@@ -19,6 +19,9 @@ import {
   CoopChatMessageItem
 } from './components/CatChatMode';
 import {
+  GlobalCoopChatMode
+} from './components/GlobalCoopChatMode';
+import {
   CoopBar
 } from './components/CoopBar';
 import {
@@ -76,6 +79,9 @@ import {
 } from './data/quests';
 import {
   MqttCoopRoomManager,
+  MqttGlobalLobbyManager,
+  GlobalLobbyPlayer,
+  GlobalLobbyChatMessage,
   CoopPlayerState,
   CoopGameConfig,
   CoopRoomEvent,
@@ -317,10 +323,17 @@ export default function App() {
   const [isReceivingPartnerAudio, setIsReceivingPartnerAudio] = useState<boolean>(false);
   const [micError, setMicError] = useState<string | null>(null);
   const [activeTeacherNotification, setActiveTeacherNotification] = useState<TeacherNotificationBannerItem | null>(null);
+  const [globalOnlinePlayers, setGlobalOnlinePlayers] = useState<GlobalLobbyPlayer[]>([]);
+  const [globalChatMessages, setGlobalChatMessages] = useState<GlobalLobbyChatMessage[]>([]);
+  const [globalLobbyStatus, setGlobalLobbyStatus] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
+  const [hasGlobalChatBadge, setHasGlobalChatBadge] = useState<boolean>(false);
 
   const roomManagerRef = useRef<MqttCoopRoomManager | null>(null);
+  const globalLobbyManagerRef = useRef<MqttGlobalLobbyManager | null>(null);
   const voiceCommRef = useRef<LiveVoiceCommunicator | null>(null);
   const matchmakingCleanupRef = useRef<(() => void) | null>(null);
+  const currentModeRef = useRef<AppMode>(currentMode);
+  currentModeRef.current = currentMode;
   const isCoopHostRef = useRef<boolean>(false);
   isCoopHostRef.current = isCoopHost;
   const roomRoleRef = useRef<RoomParticipantRole>('player');
@@ -915,7 +928,7 @@ export default function App() {
     });
   }, [isRewardMode]);
 
-  // Clean up Co-op / Study room and voice communicator on component unmount
+  // Clean up Co-op / Study room, Global Lobby, and voice communicator on component unmount
   useEffect(() => {
     return () => {
       if (voiceCommRef.current) {
@@ -930,8 +943,70 @@ export default function App() {
         roomManagerRef.current.publishLeaveAndDisconnect();
         roomManagerRef.current = null;
       }
+      if (globalLobbyManagerRef.current) {
+        globalLobbyManagerRef.current.disconnect();
+        globalLobbyManagerRef.current = null;
+      }
     };
   }, []);
+
+  // Automatically connect to Global Co-op Lobby Chat whenever user opens "Кооператив"
+  useEffect(() => {
+    if (isCoopOpen && roomRole === 'player') {
+      if (!globalLobbyManagerRef.current) {
+        const effectiveName = playerName.trim() || user?.displayName || 'Котик-Игрок';
+        const initialSelf: GlobalLobbyPlayer = {
+          playerId: selfPlayerId,
+          name: effectiveName,
+          roomCode: coopRoomCode,
+          updatedAt: Date.now(),
+        };
+        setGlobalOnlinePlayers([initialSelf]);
+        setGlobalLobbyStatus('connecting');
+
+        const lobbyMgr = new MqttGlobalLobbyManager(initialSelf, {
+          onOnlinePlayersChange: (list) => {
+            setGlobalOnlinePlayers(list);
+          },
+          onConnectionChange: (st) => {
+            setGlobalLobbyStatus(st);
+          },
+          onChatMessage: (msg) => {
+            setGlobalChatMessages((prev) => {
+              if (prev.some((m) => m.id === msg.id)) return prev;
+              return [...prev.slice(-79), msg];
+            });
+            if (msg.senderId !== selfPlayerId && currentModeRef.current !== 'global_chat') {
+              setHasGlobalChatBadge(true);
+            }
+            if (soundEnabledRef.current) {
+              playCorrectBeep();
+            }
+          },
+        });
+        globalLobbyManagerRef.current = lobbyMgr;
+        lobbyMgr.start();
+      }
+    } else {
+      if (globalLobbyManagerRef.current) {
+        globalLobbyManagerRef.current.disconnect();
+        globalLobbyManagerRef.current = null;
+        setGlobalLobbyStatus('idle');
+        setGlobalOnlinePlayers([]);
+      }
+    }
+  }, [isCoopOpen, roomRole, selfPlayerId]);
+
+  // Keep player display name and active Co-op roomCode synced into Global Co-op Lobby
+  useEffect(() => {
+    if (globalLobbyManagerRef.current) {
+      const effectiveName = playerName.trim() || user?.displayName || 'Котик-Игрок';
+      globalLobbyManagerRef.current.updateSelfState({
+        name: effectiveName,
+        roomCode: roomRole === 'player' ? coopRoomCode : null,
+      });
+    }
+  }, [playerName, user, coopRoomCode, roomRole]);
 
   // Keep player display name and overall study progress synced into active room
   useEffect(() => {
@@ -1026,10 +1101,10 @@ export default function App() {
     setCoopConnectionStatus('connecting');
     setCoopChatMessages([]);
 
-    // In regular Co-op ('player'), switch off classic_pet to speed_text.
+    // In regular Co-op ('player'), switch off classic_pet (or global_chat when joining a partner's room) to speed_text.
     // In Study Mode ('teacher' | 'student'), allow ALL modes including classic_pet!
-    let activeCoopMode: CoopActiveMode = currentMode;
-    if (role === 'player' && currentMode === 'classic_pet') {
+    let activeCoopMode: CoopActiveMode = currentMode === 'global_chat' ? 'speed_text' : currentMode;
+    if (role === 'player' && (currentMode === 'classic_pet' || (currentMode === 'global_chat' && !asHost))) {
       activeCoopMode = 'speed_text';
       setCurrentMode('speed_text');
     }
@@ -1166,14 +1241,37 @@ export default function App() {
     recentCompletedWords,
   ]);
 
-  const handleCreateCoopRoom = useCallback(() => {
+  const handleCreateCoopRoom = useCallback((): string => {
     const newCode = generateTwoDigitRoomCode();
     joinOrCreateCoopRoom(newCode, true, 'player');
+    return newCode;
   }, [joinOrCreateCoopRoom]);
 
   const handleJoinCoopRoom = useCallback((code: string) => {
     joinOrCreateCoopRoom(code.trim(), false, 'player');
   }, [joinOrCreateCoopRoom]);
+
+  const handleSendGlobalChatMessage = useCallback(
+    (text: string, inviteRoomCode?: string | null) => {
+      const cleaned = text.trim();
+      if (!cleaned) return;
+      const effectiveName = playerName.trim() || user?.displayName || 'Котик-Игрок';
+      const msg: GlobalLobbyChatMessage = {
+        id: `glmsg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        senderId: selfPlayerId,
+        senderName: effectiveName,
+        text: cleaned,
+        roomCode: inviteRoomCode ?? (roomRole === 'player' ? coopRoomCode : null),
+        timestamp: Date.now(),
+      };
+      setGlobalChatMessages((prev) => [...prev.slice(-79), msg]);
+      globalLobbyManagerRef.current?.publishChatMessage(msg);
+      if (soundEnabledRef.current) {
+        playCorrectBeep();
+      }
+    },
+    [playerName, user, selfPlayerId, roomRole, coopRoomCode]
+  );
 
   const handleCreateTeacherRoom = useCallback(() => {
     const newCode = generateTwoDigitRoomCode();
@@ -1354,6 +1452,10 @@ export default function App() {
   const handleSelectMode = useCallback(
     (nextMode: AppMode) => {
       setCurrentMode(nextMode);
+      if (nextMode === 'global_chat') {
+        setHasGlobalChatBadge(false);
+        return;
+      }
       if (roomManagerRef.current && (nextMode !== 'classic_pet' || roomRoleRef.current !== 'player')) {
         roomManagerRef.current.updateSelfState({
           mode: nextMode,
@@ -1595,14 +1697,23 @@ export default function App() {
           isCoopOpen={isCoopOpen}
           coopRoomCode={coopRoomCode}
           coopPlayersCount={Math.max(1, coopPlayers.length)}
+          showGlobalChatTab={isCoopOpen && !isStudyRoomActive}
+          hasGlobalChatBadge={hasGlobalChatBadge}
           onToggleCoop={() => {
             if (isStudyOpen && !isStudyRoomActive) {
               setIsStudyOpen(false);
             }
             if (isCoopOpen && !coopRoomCode) {
               setIsCoopOpen(false);
+              setHasGlobalChatBadge(false);
+              if (currentMode === 'global_chat') {
+                setCurrentMode('classic_pet');
+              }
             } else {
               setIsCoopOpen(true);
+              if (currentMode !== 'global_chat') {
+                setHasGlobalChatBadge(true);
+              }
             }
           }}
           isStudyOpen={isStudyOpen}
@@ -1611,6 +1722,10 @@ export default function App() {
           onToggleStudy={() => {
             if (isCoopOpen && !coopRoomCode) {
               setIsCoopOpen(false);
+              setHasGlobalChatBadge(false);
+              if (currentMode === 'global_chat') {
+                setCurrentMode('classic_pet');
+              }
             }
             if (isStudyOpen && !isStudyRoomActive) {
               setIsStudyOpen(false);
@@ -1653,12 +1768,16 @@ export default function App() {
           onDismissNotification={() => setActiveTeacherNotification(null)}
         />
 
-        {/* Lazy Co-op Multiplayer Bar (MQTT over WebSockets - connects only when user creates/joins a room) */}
+        {/* Lazy Co-op Multiplayer Bar (MQTT over WebSockets - connects only when user opens Co-op) */}
         <CoopBar
           isOpen={isCoopOpen && !isStudyRoomActive}
           onCloseCoop={() => {
             handleLeaveCoopRoom();
             setIsCoopOpen(false);
+            setHasGlobalChatBadge(false);
+            if (currentMode === 'global_chat') {
+              setCurrentMode('classic_pet');
+            }
           }}
           roomCode={roomRole === 'player' ? coopRoomCode : null}
           isHost={isCoopHost}
@@ -1849,6 +1968,29 @@ export default function App() {
               onSendCoopChatMessage={handleSendCoopChatMessage}
               onClearCoopChatMessages={() => setCoopChatMessages([])}
               selfPlayerId={selfPlayerId}
+            />
+          )}
+
+          {currentMode === 'global_chat' && (
+            <GlobalCoopChatMode
+              catLevel={displayLevel}
+              soundEnabled={soundEnabled}
+              onAddXp={handleAddXp}
+              kbScale={kbScale}
+              onSetKbScale={setKbScale}
+              isMobileMode={isMobileMode}
+              onToggleMobileMode={() => setIsMobileMode(!isMobileMode)}
+              onWordCompleted={handleWordCompletedInAnyMode}
+              onChatSent={handleChatSent}
+              selfPlayerId={selfPlayerId}
+              coopRoomCode={roomRole === 'player' ? coopRoomCode : null}
+              globalOnlinePlayers={globalOnlinePlayers}
+              globalChatMessages={globalChatMessages}
+              globalLobbyStatus={globalLobbyStatus}
+              onSendGlobalChatMessage={handleSendGlobalChatMessage}
+              onClearGlobalChatMessages={() => setGlobalChatMessages([])}
+              onCreateRoom={handleCreateCoopRoom}
+              onJoinRoom={handleJoinCoopRoom}
             />
           )}
         </main>

@@ -729,6 +729,23 @@ export const ClassicPetMode: React.FC<ClassicPetModeProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (showCustomInput || isMailboxOpen) return;
 
+      const targetEl = e.target as HTMLElement | null;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (
+        (targetEl &&
+          (targetEl.tagName === 'INPUT' ||
+            targetEl.tagName === 'TEXTAREA' ||
+            targetEl.tagName === 'SELECT' ||
+            targetEl.isContentEditable)) ||
+        (activeEl &&
+          (activeEl.tagName === 'INPUT' ||
+            activeEl.tagName === 'TEXTAREA' ||
+            activeEl.tagName === 'SELECT' ||
+            activeEl.isContentEditable))
+      ) {
+        return;
+      }
+
       // Global hotkeys with Alt
       if (e.altKey) {
         if (e.key === '1' || e.code === 'Digit1') {

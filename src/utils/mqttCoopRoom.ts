@@ -9,7 +9,7 @@ export const TOPIC_NAMESPACE = 'vox-arcanum-game-2026/typecat';
 export const HEARTBEAT_INTERVAL_MS = 500;
 export const PLAYER_TIMEOUT_MS = 3000;
 
-export type CoopActiveMode = 'classic_pet' | 'speed_text' | 'word_goal' | 'letter_sprint' | 'cat_chat';
+export type CoopActiveMode = 'classic_pet' | 'speed_text' | 'word_goal' | 'letter_sprint' | 'cat_chat' | 'global_chat';
 export type RoomParticipantRole = 'player' | 'teacher' | 'student';
 
 export interface CoopPlayerState {
@@ -158,6 +158,45 @@ export function getRoomVoiceTopic(roomCode: string): string {
 export function getMatchmakingTopic(): string {
   return `${TOPIC_NAMESPACE}/matchmaking/lobby`;
 }
+
+export function getGlobalLobbyWildcardTopic(): string {
+  return `${TOPIC_NAMESPACE}/global_lobby/#`;
+}
+
+export function getGlobalLobbyPlayerTopic(playerId: string): string {
+  return `${TOPIC_NAMESPACE}/global_lobby/player/${playerId}`;
+}
+
+export function getGlobalLobbyEventsTopic(): string {
+  return `${TOPIC_NAMESPACE}/global_lobby/events`;
+}
+
+export interface GlobalLobbyPlayer {
+  playerId: string;
+  name: string;
+  roomCode: string | null;
+  updatedAt: number;
+}
+
+export interface GlobalLobbyChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  roomCode?: string | null;
+  timestamp: number;
+}
+
+export type GlobalLobbyEvent =
+  | {
+      type: 'global_chat';
+      message: GlobalLobbyChatMessage;
+    }
+  | {
+      type: 'global_leave';
+      senderId: string;
+      timestamp: number;
+    };
 
 export function getOrCreateSessionPlayerId(storage?: Pick<Storage, 'getItem' | 'setItem'>): string {
   const store = storage ?? (typeof sessionStorage !== 'undefined' ? sessionStorage : undefined);
@@ -574,3 +613,249 @@ export function findOrCreateRandomRoom(
 
   return cleanup;
 }
+
+export const GLOBAL_LOBBY_HEARTBEAT_MS = 1200;
+export const GLOBAL_LOBBY_TIMEOUT_MS = 4500;
+
+export interface MqttGlobalLobbyCallbacks {
+  onOnlinePlayersChange: (players: GlobalLobbyPlayer[]) => void;
+  onChatMessage: (message: GlobalLobbyChatMessage) => void;
+  onConnectionChange?: (status: 'connecting' | 'connected' | 'disconnected') => void;
+}
+
+/**
+ * Manages the shared Global Co-op Chat & Online Players Lobby that everyone who opens
+ * the "Кооператив" panel joins automatically, allowing players to chat, listen to messages
+ * via speech synthesis, find a friend, and join a 2-digit room together with one click.
+ */
+export class MqttGlobalLobbyManager {
+  private client: MqttClient | null = null;
+  private selfState: GlobalLobbyPlayer;
+  private players: Map<string, GlobalLobbyPlayer> = new Map();
+  private callbacks: MqttGlobalLobbyCallbacks;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private pruneTimer: ReturnType<typeof setInterval> | null = null;
+  private brokerIndex = 0;
+  private isDestroyed = false;
+  private boundUnloadHandler: () => void;
+
+  constructor(
+    initialSelfState: GlobalLobbyPlayer,
+    callbacks: MqttGlobalLobbyCallbacks
+  ) {
+    this.selfState = { ...initialSelfState, updatedAt: Date.now() };
+    this.players.set(this.selfState.playerId, this.selfState);
+    this.callbacks = callbacks;
+    this.boundUnloadHandler = () => this.disconnect();
+  }
+
+  public start(): void {
+    this.isDestroyed = false;
+    if (typeof window !== 'undefined') {
+      window.addEventListener('beforeunload', this.boundUnloadHandler);
+      window.addEventListener('pagehide', this.boundUnloadHandler);
+    }
+    this.connectToBroker(0);
+    this.pruneTimer = setInterval(() => {
+      const now = Date.now();
+      let changed = false;
+      for (const [id, p] of this.players.entries()) {
+        if (id !== this.selfState.playerId && now - p.updatedAt > GLOBAL_LOBBY_TIMEOUT_MS) {
+          this.players.delete(id);
+          changed = true;
+        }
+      }
+      if (changed) {
+        this.emitOnlinePlayers();
+      }
+    }, 1000);
+  }
+
+  private connectToBroker(index: number): void {
+    if (this.isDestroyed) return;
+    this.brokerIndex = index % MQTT_BROKERS.length;
+    const brokerUrl = MQTT_BROKERS[this.brokerIndex];
+    this.callbacks.onConnectionChange?.('connecting');
+
+    const leavePayload = JSON.stringify({
+      type: 'global_leave',
+      senderId: this.selfState.playerId,
+      timestamp: Date.now(),
+    } satisfies GlobalLobbyEvent);
+
+    const client = mqtt.connect(brokerUrl, {
+      clientId: `typecat_gl_${this.selfState.playerId}_${Math.random().toString(16).slice(2, 6)}`,
+      clean: true,
+      connectTimeout: 5000,
+      reconnectPeriod: 2000,
+      will: {
+        topic: getGlobalLobbyEventsTopic(),
+        payload: leavePayload,
+        qos: 0,
+        retain: false,
+      },
+    });
+
+    this.client = client;
+
+    let connectedOnce = false;
+    const fallbackTimeout = setTimeout(() => {
+      if (!connectedOnce && !this.isDestroyed) {
+        try {
+          client.end(true);
+        } catch {
+          // ignore
+        }
+        this.connectToBroker(this.brokerIndex + 1);
+      }
+    }, 5500);
+
+    client.on('connect', () => {
+      if (this.isDestroyed) return;
+      connectedOnce = true;
+      clearTimeout(fallbackTimeout);
+      this.callbacks.onConnectionChange?.('connected');
+
+      client.subscribe(getGlobalLobbyWildcardTopic(), { qos: 0 }, () => {
+        this.publishSelfPresence();
+      });
+
+      if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = setInterval(() => {
+        this.publishSelfPresence();
+      }, GLOBAL_LOBBY_HEARTBEAT_MS);
+    });
+
+    client.on('message', (topic, payloadBuffer) => {
+      if (this.isDestroyed) return;
+      try {
+        const text = payloadBuffer.toString();
+        if (!text) return;
+        const parsed = JSON.parse(text);
+
+        if (topic.includes('/global_lobby/player/')) {
+          const incoming = parsed as GlobalLobbyPlayer;
+          if (!incoming || !incoming.playerId) return;
+          if (incoming.playerId === this.selfState.playerId) return;
+          this.players.set(incoming.playerId, {
+            ...incoming,
+            updatedAt: Date.now(),
+          });
+          this.emitOnlinePlayers();
+        } else if (topic.endsWith('/global_lobby/events')) {
+          const ev = parsed as GlobalLobbyEvent;
+          if (!ev || !ev.type) return;
+          if (ev.type === 'global_leave') {
+            if (ev.senderId !== this.selfState.playerId) {
+              this.players.delete(ev.senderId);
+              this.emitOnlinePlayers();
+            }
+          } else if (ev.type === 'global_chat' && ev.message) {
+            if (ev.message.senderId !== this.selfState.playerId) {
+              this.callbacks.onChatMessage(ev.message);
+            }
+          }
+        }
+      } catch {
+        // ignore malformed packets
+      }
+    });
+
+    client.on('error', () => {
+      if (!connectedOnce && !this.isDestroyed) {
+        clearTimeout(fallbackTimeout);
+        try {
+          client.end(true);
+        } catch {
+          // ignore
+        }
+        this.connectToBroker(this.brokerIndex + 1);
+      }
+    });
+
+    client.on('close', () => {
+      if (!this.isDestroyed) {
+        this.callbacks.onConnectionChange?.('disconnected');
+      }
+    });
+  }
+
+  public updateSelfState(patch: Partial<Pick<GlobalLobbyPlayer, 'name' | 'roomCode'>>): void {
+    this.selfState = {
+      ...this.selfState,
+      ...patch,
+      updatedAt: Date.now(),
+    };
+    this.players.set(this.selfState.playerId, this.selfState);
+    this.emitOnlinePlayers();
+    this.publishSelfPresence();
+  }
+
+  public publishSelfPresence(): void {
+    if (this.isDestroyed || !this.client || !this.client.connected) return;
+    this.selfState.updatedAt = Date.now();
+    this.players.set(this.selfState.playerId, this.selfState);
+    const topic = getGlobalLobbyPlayerTopic(this.selfState.playerId);
+    this.client.publish(topic, JSON.stringify(this.selfState), { qos: 0, retain: false });
+  }
+
+  public publishChatMessage(msg: GlobalLobbyChatMessage): void {
+    if (this.isDestroyed || !this.client || !this.client.connected) return;
+    const event: GlobalLobbyEvent = {
+      type: 'global_chat',
+      message: msg,
+    };
+    this.client.publish(getGlobalLobbyEventsTopic(), JSON.stringify(event), { qos: 0, retain: false });
+  }
+
+  private emitOnlinePlayers(): void {
+    const list = Array.from(this.players.values()).sort((a, b) =>
+      a.playerId === this.selfState.playerId
+        ? -1
+        : b.playerId === this.selfState.playerId
+        ? 1
+        : a.name.localeCompare(b.name)
+    );
+    this.callbacks.onOnlinePlayersChange(list);
+  }
+
+  public disconnect(): void {
+    if (this.isDestroyed) return;
+    this.isDestroyed = true;
+
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', this.boundUnloadHandler);
+      window.removeEventListener('pagehide', this.boundUnloadHandler);
+    }
+
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.pruneTimer) {
+      clearInterval(this.pruneTimer);
+      this.pruneTimer = null;
+    }
+
+    if (this.client) {
+      try {
+        if (this.client.connected) {
+          this.client.publish(
+            getGlobalLobbyEventsTopic(),
+            JSON.stringify({
+              type: 'global_leave',
+              senderId: this.selfState.playerId,
+              timestamp: Date.now(),
+            } satisfies GlobalLobbyEvent),
+            { qos: 0, retain: false }
+          );
+        }
+        this.client.end(true);
+      } catch {
+        // ignore
+      }
+      this.client = null;
+    }
+  }
+}
+
